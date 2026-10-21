@@ -1,0 +1,153 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#080d12" />
+  <meta name="description" content="Run through the Sambalpur University campus in a 3D multiplayer game." />
+  <title>University Run </title>
+</head>
+<body>
+  <div id="game-canvas"></div>
+
+  <header class="topbar">
+    <a class="brand" href="#" aria-label="Campus Run home">
+      <span class="brand-icon">SC</span>
+      <span>University <b>Run </b></span>
+    </a>
+    <div class="topbar-right">
+      <span id="connection-status" class="connection">OFFLINE</span>
+      <button id="change-name-button" class="small-button hidden">Change player</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="login-screen" class="screen login-screen">
+      <div class="glass login-card">
+        <span class="eyebrow">YOUR CAMPUS. YOUR RACE.</span>
+        <h1>Ready to <span>run?</span></h1>
+        <p>Enter your player name to explore the campus and race with friends.</p>
+        <form id="login-form">
+          <label for="player-name">PLAYER NAME</label>
+          <input id="player-name" name="playerName" maxlength="18"
+                 minlength="2" autocomplete="nickname"
+                 placeholder="Enter your name" required />
+          <p id="login-error" class="error" role="alert"></p>
+          <button class="primary-button" type="submit">ENTER CAMPUS <span>→</span></button>
+        </form>
+        <div class="login-foot"><span class="pulse-dot"></span> 3D CAMPUS EXPERIENCE</div>
+      </div>
+    </section>
+
+    <section id="home-screen" class="screen hidden">
+      <div class="glass menu-card">
+        <span class="eyebrow">WELCOME TO SAMBALPUR UNIVERSITY</span>
+        <h1>Campus <span>Run 3D</span></h1>
+        <p class="muted">Hey, <strong id="welcome-player-name">Runner</strong>. Your next adventure starts here.</p>
+        <div class="menu-buttons">
+          <button id="solo-button" class="primary-button">PLAY SOLO <span>→</span></button>
+          <button id="multiplayer-button" class="secondary-button">MULTIPLAYER</button>
+        </div>
+        <div class="character-picker">
+          <span class="field-label">CHOOSE YOUR RUNNER</span>
+          <div class="character-options">
+            <button class="character-option selected" data-character="Smruti">
+              <span class="avatar avatar-green">S</span>
+              <span><b>Smruti</b><small>Campus sprinter</small></span>
+            </button>
+            <button class="character-option" data-character="Swastik">
+              <span class="avatar avatar-purple">W</span>
+              <span><b>Swastik</b><small>Speed runner</small></span>
+            </button>
+          </div>
+        </div>
+        <p class="controls-note">Move: ← → / A D · Jump: Space · Slide: ↓ / S</p>
+      </div>
+    </section>
+
+    <section id="room-screen" class="screen hidden">
+      <div class="glass menu-card room-card">
+        <button id="back-home-button" class="back-button">← BACK</button>
+        <span class="eyebrow">PLAY WITH FRIENDS</span>
+        <h2>Multiplayer <span>Lobby</span></h2>
+        <div class="room-actions">
+          <div class="room-panel">
+            <h3>Create a room</h3>
+            <p class="muted">Host a race and share your code.</p>
+            <button id="create-room-button" class="primary-button">CREATE ROOM</button>
+          </div>
+          <div class="room-panel">
+            <h3>Join a room</h3>
+            <p class="muted">Enter a friend's five-character code.</p>
+            <form id="join-room-form">
+              <label for="room-code">ROOM CODE</label>
+              <input id="room-code" maxlength="5" minlength="5"
+                     placeholder="ABCDE" autocomplete="off" required />
+              <button class="secondary-button" type="submit">JOIN ROOM</button>
+            </form>
+          </div>
+        </div>
+        <div id="room-lobby" class="hidden">
+          <div class="room-code-box">
+            <span class="field-label">YOUR ROOM CODE</span>
+            <strong id="room-code-display">-----</strong>
+            <button id="copy-room-code-button" class="small-button">COPY</button>
+          </div>
+          <div id="player-list" class="player-list"></div>
+          <p id="lobby-message" class="muted">Waiting for another runner...</p>
+          <button id="start-race-button" class="primary-button hidden">START RACE →</button>
+        </div>
+        <p id="room-error" class="error" role="alert"></p>
+      </div>
+    </section>
+
+    <section id="hud" class="hud hidden">
+      <div class="hud-pill"><small>DISTANCE</small><strong><span id="distance-value">0</span> m</strong></div>
+      <div class="hud-pill"><small>COINS</small><strong>✦ <span id="coins-value">0</span></strong></div>
+      <button id="pause-button" class="pause-button" aria-label="Pause game">Ⅱ</button>
+    </section>
+
+    <section id="countdown-screen" class="overlay-screen hidden">
+      <div id="countdown-number">3</div>
+    </section>
+
+    <section id="pause-screen" class="screen overlay-screen hidden">
+      <div class="glass menu-card compact-card">
+        <span class="eyebrow">TAKE A BREATHER</span>
+        <h2>Game <span>Paused</span></h2>
+        <button id="resume-button" class="primary-button">RESUME RUN</button>
+        <button id="quit-button" class="secondary-button">QUIT TO MENU</button>
+      </div>
+    </section>
+
+    <section id="over-screen" class="screen overlay-screen hidden">
+      <div class="glass menu-card compact-card">
+        <span class="eyebrow">RACE COMPLETE</span>
+        <h2>Nice <span>run!</span></h2>
+        <div class="results-grid">
+          <div><small>DISTANCE</small><strong id="final-distance">0 m</strong></div>
+          <div><small>COINS</small><strong id="final-coins">0</strong></div>
+        </div>
+        <button id="retry-button" class="primary-button">RUN AGAIN</button>
+        <button id="menu-button" class="secondary-button">MAIN MENU</button>
+      </div>
+    </section>
+
+    <div id="toast" class="toast hidden" role="status"></div>
+
+    <div id="mobile-controls" class="mobile-controls hidden">
+      <div class="control-group">
+        <button id="left-control" aria-label="Move left">←</button>
+        <button id="right-control" aria-label="Move right">→</button>
+      </div>
+      <div class="control-group">
+        <button id="slide-control" aria-label="Slide">↓</button>
+        <button id="jump-control" aria-label="Jump">↑</button>
+      </div>
+    </div>
+  </main>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
