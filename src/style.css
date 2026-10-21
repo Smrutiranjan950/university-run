@@ -155,3 +155,25 @@ input::placeholder { color: #647180; }
   .glass { padding-top: 20px; padding-bottom: 20px; }
   h1 { font-size: 36px; }
 }
+#game-canvas {
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+#game-canvas canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+#mobile-controls,
+#mobile-controls button {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+#mobile-controls button {
+  touch-action: manipulation;
+}
