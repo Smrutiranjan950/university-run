@@ -3,1694 +3,2918 @@ import { io } from 'socket.io-client';
 import './style.css';
 
 // ============================================================
-// SAMBALPUR CAMPUS RUN 3D — MOBILE SWIPE + HUMAN-STYLE RUNNERS
+// SAMBALPUR CAMPUS RUN 3D
+// Three.js | Solo + Multiplayer | Desktop + Mobile
 // ============================================================
 
 const $ = (id) => document.getElementById(id);
-const socket = io({ autoConnect: false, reconnection: true });
 
-const ROAD_WIDTH = 9.5;
-const ROAD_LENGTH = 30;
-const CAMPUS_GAP = 27;
-const LANE_WIDTH = 2.3;
-const START_SPEED = 15;
-const MAX_HITS = 2;
+const socketUrl = import.meta.env.DEV
+  ? `${window.location.protocol}//${window.location.hostname}:3000`
+  : window.location.origin;
 
-let playerName = '';
-let character = 'Smruti';
+const socket = io(socketUrl, {
+  autoConnect: false,
+  reconnection: true,
+  reconnectionAttempts: 8,
+  timeout: 10000
+});
+
+const LANES = [-2.8, 0, 2.8];
+
+// Side lane the runner starts in: 0 = left, 2 = right.
+// The gate shifts so its entrance arch lines up with this lane.
+const START_LANE = 2;
+const START_SIDE = LANES[START_LANE] < 0 ? -1 : 1;
+const ARCH_CENTER_X = 6.0;
+const GATE_OFFSET_X = LANES[START_LANE] - START_SIDE * ARCH_CENTER_X;
+
+const ROAD_WIDTH = 10;
+const SEGMENT_LENGTH = 48;
+const SEGMENT_COUNT = 7;
+const START_SPEED = 17;
+const MAX_DISTANCE = 1500;
+const GRAVITY = 24;
+
+// ---- Campus layout (world units) ----
+// The main gate stands BEHIND the runner's start position, so the runner
+// begins right at the gate entrance and runs into the campus. Nothing
+// ever scrolls through the character.
+const PLAYER_START_Z = 2;
+const GATE_Z = 4.5;
+const SEGMENT_WRAP_Z = SEGMENT_LENGTH * 2;
+
+const FRONT_X = 12.5;   // distance from road centre to every building facade
+const WALL_X = 23.8;    // campus boundary wall (lines up with the gate's pink wall)
+const AVENUE_X = 8.9;   // roadside avenue trees
+
+// Building slots along each side of a segment (local z of building centre).
+// Left and right are staggered so the road never feels mirrored.
+const LEFT_SLOTS = [-12, -36];
+const RIGHT_SLOTS = [-18, -42];
+
+// Intro camera: starts pulled back outside the gate, then swoops in at "GO".
+const INTRO_BACK = 14;
+const INTRO_UP = 1.0;
+
+const COLORS = {
+  sky: 0x9dd7ec,
+  grass: 0x4b9253,
+  road: 0x343d46,
+  line: 0xf3f1d9,
+  blue: 0x2784f5,
+  orange: 0xff7b28,
+  gold: 0xffca45
+};
+
+let scene;
+let camera;
+let renderer;
+let clock;
+let skyMesh;
+let dust;
+let gateFlame = null;
+
+let player;
+let remotePlayer;
+let world = [];
+let obstacles = [];
+let coins = [];
+let decorations = [];
+
+let currentScreen = 'login';
+let playerName = 'Player';
+let selectedCharacter = 'Smruti';
+let gameMode = 'solo';
 let roomCode = '';
-let mode = 'solo';
 let isHost = false;
+
 let running = false;
 let paused = false;
 let raceStarted = false;
-let distance = 0;
-let coins = 0;
-let speed = START_SPEED;
-let lane = 1;
-let hits = 0;
-let scoreMultiplier = 1;
-let boostUntil = 0;
-let jumpUntil = 0;
+let raceFinished = false;
+
+let lane = START_LANE;
+let jumpVelocity = 0;
+let isJumping = false;
+let isSliding = false;
 let slideUntil = 0;
-let lastTime = 0;
-let lastSync = 0;
-let toastTimer;
-let countdownTimer;
+let speed = START_SPEED;
+let distance = 0;
+let coinCount = 0;
+let elapsed = 0;
+let spawnTimer = 0;
+let coinTimer = 0;
+let lastNetworkUpdate = 0;
+let lastToast = 0;
+let invulnerableUntil = 0;
+let hitCount = 0;
+let shakeUntil = 0;
+let introBlend = 1;
 
-const roadSegments = [];
-const campusSegments = [];
-const obstacles = [];
-const pickups = [];
-const remoteRunners = new Map();
+const heldKeys = new Set();
 
-let universityGate;
-let player;
-
-const scene = new THREE.Scene();
-scene.background = new THREE.Color('#b8d2e0');
-scene.fog = new THREE.Fog('#b8d2e0', 65, 190);
-
-const camera = new THREE.PerspectiveCamera(
-  65, window.innerWidth / window.innerHeight, 0.1, 300
-);
-camera.position.set(0, 5.2, 10);
-
-const renderer = new THREE.WebGLRenderer({
-  antialias: true,
-  alpha: false
-});
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.7));
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.1;
-$('game-canvas').appendChild(renderer.domElement);
-
-scene.add(new THREE.HemisphereLight(0xeaf6ff, 0x4a5439, 2.1));
-
-const sun = new THREE.DirectionalLight(0xffe9c7, 3);
-sun.position.set(-12, 25, 10);
-sun.castShadow = true;
-sun.shadow.mapSize.set(1024, 1024);
-sun.shadow.camera.left = -30;
-sun.shadow.camera.right = 30;
-sun.shadow.camera.top = 35;
-sun.shadow.camera.bottom = -35;
-scene.add(sun);
-
-// ============================================================
-// MATERIALS AND HELPERS
-// ============================================================
-
-const mat = (color, roughness = 0.8, metalness = 0) =>
-  new THREE.MeshStandardMaterial({ color, roughness, metalness });
-
-const materials = {
-  grass: mat('#547b43'),
-  grassLight: mat('#6d914e'),
-  road: mat('#343a42'),
-  pavement: mat('#aaa99f'),
-  white: mat('#f5f0e5'),
-  tree: mat('#27633c'),
-  treeLight: mat('#397b45'),
-  treeBright: mat('#4a8c4a'),
-  trunk: mat('#765039'),
-  branch: mat('#65432e'),
-  wall: mat('#e4d9c5'),
-  roof: mat('#a65f46'),
-  glass: mat('#6d9faf', 0.25, 0.2),
-  gold: mat('#ffd45e', 0.3, 0.45),
-  iron: mat('#202a2a', 0.45, 0.6),
-  brick: mat('#a9513c'),
-  flowerPink: mat('#ed7795'),
-  flowerYellow: mat('#f3ce57'),
-  flowerWhite: mat('#fff0dc'),
-  sign: mat('#204d3a'),
-  signBorder: mat('#d8b96d', 0.45, 0.2),
-  lampPost: mat('#343b40', 0.45, 0.5),
-  bench: mat('#795139')
+const ui = {
+  canvas: $('game-canvas'),
+  login: $('login-screen'),
+  home: $('home-screen'),
+  room: $('room-screen'),
+  hud: $('hud'),
+  countdown: $('countdown-screen'),
+  countdownNumber: $('countdown-number'),
+  pause: $('pause-screen'),
+  over: $('over-screen'),
+  playerName: $('player-name'),
+  loginForm: $('login-form'),
+  loginError: $('login-error'),
+  welcomeName: $('welcome-player-name'),
+  connection: $('connection-status'),
+  changeName: $('change-name-button'),
+  solo: $('solo-button'),
+  multiplayer: $('multiplayer-button'),
+  backHome: $('back-home-button'),
+  createRoom: $('create-room-button'),
+  joinForm: $('join-room-form'),
+  roomInput: $('room-code'),
+  roomLobby: $('room-lobby'),
+  roomCodeDisplay: $('room-code-display'),
+  copyRoom: $('copy-room-code-button'),
+  playerList: $('player-list'),
+  lobbyMessage: $('lobby-message'),
+  startRace: $('start-race-button'),
+  roomError: $('room-error'),
+  distance: $('distance-value'),
+  coins: $('coins-value'),
+  pauseButton: $('pause-button'),
+  resume: $('resume-button'),
+  quit: $('quit-button'),
+  finalDistance: $('final-distance'),
+  finalCoins: $('final-coins'),
+  retry: $('retry-button'),
+  menu: $('menu-button'),
+  toast: $('toast'),
+  mobile: $('mobile-controls'),
+  left: $('left-control'),
+  right: $('right-control'),
+  jump: $('jump-control'),
+  slide: $('slide-control')
 };
 
-const trunkGeometry = new THREE.CylinderGeometry(0.17, 0.28, 2.4, 8);
-const branchGeometry = new THREE.CylinderGeometry(0.055, 0.09, 1.1, 6);
-const foliageGeometry = new THREE.IcosahedronGeometry(0.9, 1);
-const smallFoliageGeometry = new THREE.IcosahedronGeometry(0.62, 1);
-const flowerGeometry = new THREE.SphereGeometry(0.11, 7, 6);
-const lampGlowMaterial = new THREE.MeshBasicMaterial({ color: '#fff2bf' });
+function showScreen(name) {
+  currentScreen = name;
 
-function addBox(parent, w, h, d, material, x, y, z) {
-  const mesh = new THREE.Mesh(
-    new THREE.BoxGeometry(w, h, d),
-    material
-  );
-  mesh.position.set(x, y, z);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  parent.add(mesh);
-  return mesh;
+  for (const element of [
+    ui.login, ui.home, ui.room, ui.hud,
+    ui.countdown, ui.pause, ui.over
+  ]) {
+    element?.classList.add('hidden');
+  }
+
+  if (name === 'login') ui.login?.classList.remove('hidden');
+  if (name === 'home') ui.home?.classList.remove('hidden');
+  if (name === 'room') ui.room?.classList.remove('hidden');
+  if (name === 'game') {
+    ui.hud?.classList.remove('hidden');
+    ui.mobile?.classList.remove('hidden');
+  } else {
+    ui.mobile?.classList.add('hidden');
+  }
 }
 
-function addText(text, width, color, x, y, z, parent) {
-  const canvas = document.createElement('canvas');
-  canvas.width = 1024;
-  canvas.height = 180;
+function showToast(message) {
+  if (!ui.toast) return;
+  ui.toast.textContent = message;
+  ui.toast.classList.remove('hidden');
+  lastToast = performance.now();
+}
 
-  const ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, 1024, 180);
-  ctx.font = 'bold 70px Arial';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillStyle = color;
-  ctx.shadowColor = '#000000';
-  ctx.shadowBlur = 4;
-  ctx.fillText(text, 512, 90, 970);
+function hideToast() {
+  if (ui.toast && performance.now() - lastToast > 2400) {
+    ui.toast.classList.add('hidden');
+  }
+}
 
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
+function setConnection(text) {
+  if (ui.connection) ui.connection.textContent = text;
+}
 
-  const mesh = new THREE.Mesh(
-    new THREE.PlaneGeometry(width, width * 0.176),
-    new THREE.MeshBasicMaterial({
-      map: texture,
+function random(min, max) {
+  return min + Math.random() * (max - min);
+}
+
+function choose(array) {
+  return array[Math.floor(Math.random() * array.length)];
+}
+
+function makeMaterial(color, roughness = 0.85, extra = {}) {
+  return new THREE.MeshStandardMaterial({
+    color,
+    roughness,
+    ...extra
+  });
+}
+
+// ------------------------------------------------------------
+// PROCEDURAL TEXTURES
+// ------------------------------------------------------------
+
+function makeNoiseTexture({
+  size = 256,
+  base = [60, 64, 70],
+  variance = 22,
+  specks = 0.02,
+  repeat = [1, 1],
+  blades = false
+} = {}) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const g = c.getContext('2d');
+  const img = g.createImageData(size, size);
+
+  for (let i = 0; i < size * size; i++) {
+    const n = (Math.random() - 0.5) * variance;
+    const s = Math.random() < specks ? Math.random() * 45 : 0;
+    img.data[i * 4] = base[0] + n + s;
+    img.data[i * 4 + 1] = base[1] + n + s;
+    img.data[i * 4 + 2] = base[2] + n + s;
+    img.data[i * 4 + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+
+  if (blades) {
+    for (let i = 0; i < size * 6; i++) {
+      g.strokeStyle = `rgba(${20 + Math.random() * 40 | 0},${90 + Math.random() * 60 | 0},${30 + Math.random() * 30 | 0},0.35)`;
+      const x = Math.random() * size;
+      const y = Math.random() * size;
+      g.beginPath();
+      g.moveTo(x, y);
+      g.lineTo(x + (Math.random() - 0.5) * 3, y - 3 - Math.random() * 4);
+      g.stroke();
+    }
+  }
+
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(...repeat);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 8;
+  return t;
+}
+
+const materials = {
+  grass: new THREE.MeshStandardMaterial({
+    map: makeNoiseTexture({ base: [62, 128, 58], variance: 34, specks: 0.01, repeat: [70, 110], blades: true }),
+    roughness: 1
+  }),
+  // Brighter, well-kept campus lawn (sits just above the base grass)
+  lawn: new THREE.MeshStandardMaterial({
+    map: makeNoiseTexture({ base: [88, 158, 68], variance: 30, specks: 0.01, repeat: [8, 7], blades: true }),
+    roughness: 1
+  }),
+  road: new THREE.MeshStandardMaterial({
+    map: makeNoiseTexture({ base: [58, 62, 68], variance: 24, specks: 0.04, repeat: [3, 12] }),
+    roughness: 0.92
+  }),
+  sidewalk: new THREE.MeshStandardMaterial({
+    map: makeNoiseTexture({ base: [176, 172, 160], variance: 18, specks: 0.01, repeat: [1, 12] }),
+    roughness: 0.9
+  }),
+  white: makeMaterial(0xffffff),
+  line: makeMaterial(COLORS.line),
+  concrete: makeMaterial(0xb8c1c7),
+  darkConcrete: makeMaterial(0x65717b),
+  glass: new THREE.MeshPhysicalMaterial({
+    color: 0x8ec9de,
+    roughness: 0.08,
+    metalness: 0.6,
+    clearcoat: 1,
+    envMapIntensity: 1.6
+  }),
+  tree: makeMaterial(0x277243),
+  treeLight: makeMaterial(0x4d9850),
+  trunk: makeMaterial(0x795237),
+  hedge: makeMaterial(0x2d7a3a, 1),
+  wallPink: makeMaterial(0xd78aa0, 0.9),
+  bench: makeMaterial(0x8a5a35, 0.8),
+  tank: makeMaterial(0x2b3a46, 0.6),
+  gold: new THREE.MeshStandardMaterial({
+    color: COLORS.gold,
+    roughness: 0.22,
+    metalness: 0.95,
+    emissive: 0x6b4a00,
+    emissiveIntensity: 0.35,
+    envMapIntensity: 1.4
+  }),
+  black: makeMaterial(0x202b35),
+  red: makeMaterial(0xd74438),
+  barrierWhite: makeMaterial(0xf0eee6),
+  blue: makeMaterial(COLORS.blue),
+  orange: makeMaterial(COLORS.orange)
+};
+
+const foliageMats = [0x2a7a45, 0x3a8c4a, 0x1f6a3c, 0x4a9a4c].map((c) => makeMaterial(c, 0.9));
+
+// Shared (never disposed) materials
+const sharedMats = new Set([...Object.values(materials), ...foliageMats]);
+
+// Shared geometries
+const blobGeos = Array.from({ length: 6 }, () => lumpyBlob(1));
+const windowGeo = new THREE.BoxGeometry(0.62, 0.48, 0.04);
+const laneGeo = new THREE.BoxGeometry(0.09, 0.025, 2.7);
+const zebraGeo = new THREE.BoxGeometry(0.55, 0.03, 3.4);
+const lawnGeo = new THREE.PlaneGeometry(WALL_X - 7.2, SEGMENT_LENGTH);
+
+// Free GPU memory of anything that is removed from the scene.
+function disposeObject(root) {
+  if (!root) return;
+
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+
+    o.geometry?.dispose();
+
+    const list = Array.isArray(o.material) ? o.material : [o.material];
+    for (const m of list) {
+      if (!m || sharedMats.has(m)) continue;
+      m.map?.dispose();
+      m.dispose();
+    }
+  });
+}
+
+// ------------------------------------------------------------
+// THREE.JS INITIALIZATION
+// ------------------------------------------------------------
+
+function initThree() {
+  scene = new THREE.Scene();
+
+  camera = new THREE.PerspectiveCamera(
+    62,
+    window.innerWidth / window.innerHeight,
+    0.1,
+    400
+  );
+
+  // Start pulled back OUTSIDE the gate so the whole gate is in view.
+  camera.position.set(LANES[START_LANE], 4.4 + INTRO_UP, 9.5 + INTRO_BACK);
+  camera.lookAt(GATE_OFFSET_X * 0.8, 2.1, -7);
+
+  renderer = new THREE.WebGLRenderer({
+    antialias: true,
+    alpha: false,
+    powerPreference: 'high-performance'
+  });
+
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.7));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.0;
+
+  ui.canvas?.replaceChildren(renderer.domElement);
+
+  setupRealisticRendering();
+
+  clock = new THREE.Clock();
+
+  createWorld();
+  createPlayer();
+
+  window.addEventListener('resize', resizeRenderer);
+}
+
+function setupRealisticRendering() {
+  // Gradient sky dome with a sun glow
+  const skyMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    depthWrite: false,
+    fog: false,
+    uniforms: {
+      top: { value: new THREE.Color(0x2f78c4) },
+      mid: { value: new THREE.Color(0x8fcbea) },
+      bottom: { value: new THREE.Color(0xdfeaea) },
+      sunDir: { value: new THREE.Vector3(-24, 42, 18).normalize() }
+    },
+    vertexShader: `
+      varying vec3 vP;
+      void main() {
+        vP = normalize(position);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: `
+      uniform vec3 top, mid, bottom, sunDir;
+      varying vec3 vP;
+      void main() {
+        float h = clamp(vP.y, 0.0, 1.0);
+        vec3 c = mix(bottom, mid, smoothstep(0.0, 0.25, h));
+        c = mix(c, top, smoothstep(0.25, 0.9, h));
+        float s = max(dot(normalize(vP), sunDir), 0.0);
+        c += vec3(1.0, 0.85, 0.55) * (pow(s, 600.0) * 2.0 + pow(s, 12.0) * 0.18);
+        gl_FragColor = vec4(c, 1.0);
+        #include <colorspace_fragment>
+      }`
+  });
+
+  skyMesh = new THREE.Mesh(new THREE.SphereGeometry(350, 32, 16), skyMat);
+  skyMesh.renderOrder = -1;
+  skyMesh.frustumCulled = false;
+  scene.add(skyMesh);
+
+  scene.fog = new THREE.Fog(0xcfe3ea, 45, 230);
+
+  // Sky reflections for glass, gold and metal
+  const envScene = new THREE.Scene();
+  envScene.add(new THREE.Mesh(new THREE.SphereGeometry(10, 32, 16), skyMat));
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(envScene, 0.02).texture;
+  scene.environmentIntensity = 0.55;
+  pmrem.dispose();
+
+  scene.add(new THREE.HemisphereLight(0xcfe9ff, 0x4a6a3c, 0.9));
+
+  const sun = new THREE.DirectionalLight(0xfff0d0, 3.0);
+  sun.position.set(-24, 42, 18);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.camera.left = -35;
+  sun.shadow.camera.right = 35;
+  sun.shadow.camera.top = 40;
+  sun.shadow.camera.bottom = -35;
+  sun.shadow.camera.near = 1;
+  sun.shadow.camera.far = 130;
+  sun.shadow.bias = -0.0004;
+  sun.shadow.normalBias = 0.04;
+  scene.add(sun);
+
+  createDust();
+}
+
+function createDust() {
+  const N = 160;
+  const pos = new Float32Array(N * 3);
+
+  for (let i = 0; i < N; i++) {
+    pos[i * 3] = random(-12, 12);
+    pos[i * 3 + 1] = random(0.3, 7);
+    pos[i * 3 + 2] = random(-90, 10);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+
+  dust = new THREE.Points(
+    geo,
+    new THREE.PointsMaterial({
+      color: 0xffffff,
+      size: 0.08,
       transparent: true,
-      side: THREE.DoubleSide
+      opacity: 0.45,
+      depthWrite: false
     })
   );
+  dust.frustumCulled = false;
+  scene.add(dust);
+}
 
-  mesh.position.set(x, y, z);
+function updateDust(delta) {
+  if (!dust) return;
+
+  const a = dust.geometry.attributes.position;
+
+  for (let i = 0; i < a.count; i++) {
+    let z = a.getZ(i) + speed * delta * 0.9;
+
+    if (z > 12) {
+      z = -90;
+      a.setX(i, random(-12, 12));
+      a.setY(i, random(0.3, 7));
+    }
+
+    a.setZ(i, z);
+  }
+
+  a.needsUpdate = true;
+}
+
+function resizeRenderer() {
+  if (!camera || !renderer) return;
+
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.7));
+}
+
+function addMesh(parent, geometry, material, position, options = {}) {
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.position.set(...position);
+
+  if (options.rotation) {
+    mesh.rotation.set(...options.rotation);
+  }
+
+  if (options.scale) {
+    mesh.scale.set(...options.scale);
+  }
+
+  mesh.castShadow = options.castShadow ?? true;
+  mesh.receiveShadow = options.receiveShadow ?? true;
+
   parent.add(mesh);
   return mesh;
 }
 
-function makeArch(parent, points, radius, material) {
-  const curve = new THREE.CatmullRomCurve3(
-    points.map(([x, y, z]) => new THREE.Vector3(x, y, z))
+function addBox(parent, position, size, material, options = {}) {
+  return addMesh(
+    parent,
+    new THREE.BoxGeometry(...size),
+    material,
+    position,
+    options
   );
+}
 
-  const mesh = new THREE.Mesh(
-    new THREE.TubeGeometry(curve, 56, radius, 10, false),
-    material
+function addCylinder(parent, position, radiusTop, radiusBottom, height, material, segments = 10) {
+  return addMesh(
+    parent,
+    new THREE.CylinderGeometry(radiusTop, radiusBottom, height, segments),
+    material,
+    position
   );
+}
 
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
+// Many copies of one shape in a single draw call (windows, road markings).
+const _dummy = new THREE.Object3D();
+
+function addInstanced(parent, geometry, material, items, options = {}) {
+  if (!items.length) return null;
+
+  const mesh = new THREE.InstancedMesh(geometry, material, items.length);
+
+  items.forEach((item, i) => {
+    _dummy.position.set(...item.p);
+    _dummy.rotation.set(0, item.ry || 0, 0);
+    _dummy.scale.set(...(item.s || [1, 1, 1]));
+    _dummy.updateMatrix();
+    mesh.setMatrixAt(i, _dummy.matrix);
+  });
+
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.castShadow = options.castShadow ?? false;
+  mesh.receiveShadow = options.receiveShadow ?? true;
+  mesh.frustumCulled = false;
+
   parent.add(mesh);
   return mesh;
 }
 
-// ============================================================
-// UNIVERSITY ENTRANCE GATE
-// ============================================================
+// ------------------------------------------------------------
+// HUMAN CHARACTER MODEL (Swastik + Smruti)
+// ------------------------------------------------------------
 
-function buildUniversityGate() {
-  universityGate = new THREE.Group();
-  universityGate.position.set(3.9, 0, -30);
+function createCharacter(characterName, color = COLORS.blue) {
+  const root = new THREE.Group();
+  const rig = new THREE.Group();
+  root.add(rig);
 
-  const concrete = mat('#e6e1d6');
-  const concreteShade = mat('#c8c6bd');
-  const plaque = mat('#783d31');
-  const darkGlass = mat('#263b43', 0.25, 0.2);
-  const lightBrick = mat('#bb674f');
+  // Smruti: ponytail + slimmer shoulders. Swastik: short hair.
+  const female = characterName === 'Smruti';
 
-  addBox(
-    universityGate, 5.2, 8.2, 1.05,
-    materials.brick, 0, 4.1, 0
-  );
+  const skin = makeMaterial(female ? 0xc48a64 : 0xb57c58, 0.6);
+  const shirt = makeMaterial(color, 0.85);
+  const pants = makeMaterial(female ? 0x2a3140 : 0x2c3d5c, 0.9);
+  const shoeM = makeMaterial(0xf1f1ee, 0.7);
+  const soleM = makeMaterial(0x2a2a2a, 0.9);
+  const hairM = makeMaterial(0x1a1412, 0.55);
+  const darkM = makeMaterial(0x15100e, 0.4);
+  const whiteM = makeMaterial(0xf4f4f0, 0.4);
+  const lipM = makeMaterial(0x8a4a3e, 0.6);
+  const bagM = makeMaterial(female ? 0x7b2d4a : 0x173e7b, 0.8);
 
-  for (let row = 0; row < 9; row++) {
-    for (let col = 0; col < 4; col++) {
-      addBox(
-        universityGate, 1.12, 0.035, 0.035,
-        lightBrick,
-        -1.75 + col * 1.17,
-        0.8 + row * 0.78,
-        0.55
-      );
-    }
+  const FX = { castShadow: false };
+  const H = 0.97;
+  const sx = female ? 0.22 : 0.26;
+
+  const pivot = (parent, x, y, z = 0) => {
+    const g = new THREE.Group();
+    g.position.set(x, y, z);
+    parent.add(g);
+    return g;
+  };
+
+  // Pelvis + upper body (upper pivots at the hips for a natural lean)
+  addMesh(rig, new THREE.SphereGeometry(0.16, 12, 10), pants, [0, 0.99, 0], { scale: [1.2, 0.75, 0.85] });
+
+  const upper = pivot(rig, 0, H);
+  addMesh(upper, new THREE.CapsuleGeometry(0.17, 0.24, 6, 12), shirt, [0, 1.26 - H, 0],
+    { scale: [female ? 1.1 : 1.28, 1, 0.85] });
+  addMesh(upper, new THREE.CylinderGeometry(0.052, 0.06, 0.12, 10), skin, [0, 1.6 - H, 0]);
+
+  // Backpack with front straps
+  addBox(upper, [0, 1.28 - H, -0.19], [0.3, 0.36, 0.14], bagM);
+  for (const s of [-1, 1]) {
+    addBox(upper, [s * 0.1, 1.34 - H, 0.15], [0.05, 0.3, 0.025], bagM);
   }
 
-  for (const x of [-2.75, 2.75]) {
-    addBox(
-      universityGate, 0.22, 8.6, 1.25,
-      concrete, x, 4.3, 0.02
-    );
+  // Head with face
+  const head = pivot(upper, 0, 1.66 - H);
+  addMesh(head, new THREE.SphereGeometry(0.105, 20, 16), skin, [0, 0.12, 0], { scale: [0.92, 1.15, 1.0] });
+  addMesh(head, new THREE.SphereGeometry(0.07, 12, 10), skin, [0, 0.03, 0.035], { scale: [0.95, 0.8, 0.9] });
+  addMesh(head, new THREE.SphereGeometry(0.02, 8, 8), skin, [0, 0.1, 0.104], { scale: [0.9, 1.2, 1.2], ...FX });
+  addBox(head, [0, 0.065, 0.092], [0.05, 0.009, 0.01], lipM, FX);
+
+  for (const s of [-1, 1]) {
+    addMesh(head, new THREE.SphereGeometry(0.017, 10, 8), whiteM, [s * 0.04, 0.128, 0.091], { scale: [1.2, 0.9, 0.6], ...FX });
+    addMesh(head, new THREE.SphereGeometry(0.009, 8, 8), darkM, [s * 0.04, 0.128, 0.1], FX);
+    addBox(head, [s * 0.04, 0.152, 0.093], [0.05, 0.009, 0.012], hairM, { rotation: [0, 0, -s * 0.08], ...FX });
+    addMesh(head, new THREE.SphereGeometry(0.024, 8, 8), skin, [s * 0.098, 0.115, -0.005], { scale: [0.5, 1, 0.8] });
   }
 
-  addBox(
-    universityGate, 3.6, 2.05, 0.08,
-    darkGlass, 0, 7.1, 0.57
-  );
+  // Hair: top cap + back volume
+  addMesh(head, new THREE.SphereGeometry(0.113, 20, 14, 0, Math.PI * 2, 0, 1.12), hairM, [0, 0.12, -0.004], { scale: [0.92, 1.15, 1.0] });
+  addMesh(head, new THREE.SphereGeometry(0.105, 16, 12), hairM, [0, 0.115, -0.035], { scale: [0.9, 1.1, 0.95] });
 
-  for (let x = -1.3; x <= 1.31; x += 0.65) {
-    addBox(
-      universityGate, 0.035, 2, 0.04,
-      concrete, x, 7.1, 0.63
-    );
+  let ponytail = null;
+  if (female) {
+    ponytail = pivot(head, 0, 0.17, -0.1);
+    addMesh(ponytail, new THREE.CapsuleGeometry(0.035, 0.2, 4, 8), hairM, [0, -0.14, 0]);
+    addMesh(ponytail, new THREE.SphereGeometry(0.04, 8, 8), makeMaterial(0xd74438), [0, -0.01, 0]);
   }
 
-  makeArch(universityGate, [
-    [-10.5, 2.7, 0.15],
-    [-8, 2.7, 0.15],
-    [-6, 3, 0.15],
-    [-4.5, 4, 0.15],
-    [-3, 5.7, 0.15],
-    [-1.8, 7.5, 0.15],
-    [-0.5, 8.9, 0.15],
-    [1.2, 9, 0.15],
-    [3.3, 7.7, 0.15],
-    [5, 6, 0.15],
-    [6.2, 4.4, 0.15],
-    [8, 3, 0.15],
-    [10.5, 2.7, 0.15]
-  ], 0.28, concrete);
+  // Jointed arms and legs
+  const j = {};
 
-  makeArch(universityGate, [
-    [-10.5, 2.3, 0.35],
-    [-8, 2.35, 0.35],
-    [-5.8, 2.65, 0.35],
-    [-4, 3.7, 0.35],
-    [-2.5, 5.5, 0.35],
-    [-1.2, 7.5, 0.35],
-    [0.2, 8.4, 0.35],
-    [2, 7.9, 0.35],
-    [3.8, 6.2, 0.35],
-    [5.6, 4.3, 0.35],
-    [7.6, 2.8, 0.35],
-    [10.5, 2.3, 0.35]
-  ], 0.13, concreteShade);
+  for (const s of [-1, 1]) {
+    const k = s < 0 ? 'l' : 'r';
 
-  for (const side of [-1, 1]) {
-    addBox(
-      universityGate, 0.32, 3, 0.8,
-      concrete, side * 9.6, 1.5, 0
-    );
+    const shoulder = pivot(upper, s * sx, 1.47 - H);
+    addMesh(shoulder, new THREE.SphereGeometry(0.075, 10, 8), shirt, [0, 0, 0]);
+    addMesh(shoulder, new THREE.CapsuleGeometry(0.05, 0.2, 4, 8), skin, [0, -0.15, 0]);
+    addMesh(shoulder, new THREE.CapsuleGeometry(0.062, 0.09, 4, 8), shirt, [0, -0.1, 0]);
+    const elbow = pivot(shoulder, 0, -0.3);
+    addMesh(elbow, new THREE.CapsuleGeometry(0.043, 0.2, 4, 8), skin, [0, -0.14, 0]);
+    addMesh(elbow, new THREE.SphereGeometry(0.05, 10, 8), skin, [0, -0.31, 0.01], { scale: [0.9, 1.1, 0.9] });
 
-    addBox(
-      universityGate, 0.28, 2.8, 0.7,
-      concrete, side * 5, 1.4, 0
-    );
+    const hip = pivot(rig, s * 0.095, H);
+    addMesh(hip, new THREE.CapsuleGeometry(0.085, 0.28, 4, 10), pants, [0, -0.22, 0]);
+    const knee = pivot(hip, 0, -0.44);
+    addMesh(knee, new THREE.CapsuleGeometry(0.065, 0.3, 4, 10), pants, [0, -0.21, 0]);
+    const ankle = pivot(knee, 0, -0.42);
+    addMesh(ankle, new THREE.BoxGeometry(0.11, 0.08, 0.27), shoeM, [0, -0.065, 0.05]);
+    addMesh(ankle, new THREE.BoxGeometry(0.115, 0.03, 0.285), soleM, [0, -0.09, 0.05]);
 
-    const centerX = side * 7.25;
-
-    for (const y of [0.35, 1.05, 1.8, 2.45]) {
-      addBox(
-        universityGate, 4.1, 0.09, 0.13,
-        materials.iron, centerX, y, 0.45
-      );
-    }
-
-    for (let i = 0; i <= 12; i++) {
-      const x = side * (5.25 + i * 0.335);
-
-      addBox(
-        universityGate, 0.075, 2.5, 0.12,
-        materials.iron, x, 1.35, 0.45
-      );
-
-      const finial = new THREE.Mesh(
-        new THREE.ConeGeometry(0.075, 0.18, 5),
-        materials.gold
-      );
-
-      finial.position.set(x, 2.72, 0.45);
-      universityGate.add(finial);
-    }
+    j[k + 'Shoulder'] = shoulder;
+    j[k + 'Elbow'] = elbow;
+    j[k + 'Hip'] = hip;
+    j[k + 'Knee'] = knee;
+    j[k + 'Ankle'] = ankle;
   }
 
-  addBox(
-    universityGate, 3.7, 1, 0.12,
-    plaque, 0, 4, 0.63
-  );
+  // Model front is +Z; rotating by PI makes the runner face -Z (down the road).
+  root.rotation.y = Math.PI;
 
-  addText(
-    'SAMBALPUR UNIVERSITY',
-    3.45, '#fff6e5', 0, 4.18, 0.71, universityGate
-  );
+  root.userData = {
+    rig,
+    upper,
+    head,
+    ponytail,
+    joints: j,
+    characterName,
+    baseColor: color,
+    phaseOffset: Math.random() * Math.PI * 2,
+    lastT: undefined
+  };
 
-  addText(
-    'JYOTI VIHAR • ODISHA',
-    2.25, '#fff6e5', 0, 3.78, 0.71, universityGate
-  );
-
-  addBox(
-    universityGate, 1.15, 1.05, 0.12,
-    concrete, 0, 1.75, 0.62
-  );
-
-  addBox(
-    universityGate, 0.88, 0.78, 0.06,
-    darkGlass, 0, 1.78, 0.71
-  );
-
-  addBox(
-    universityGate, 0.08, 0.78, 0.04,
-    concrete, 0, 1.78, 0.75
-  );
-
-  addBox(
-    universityGate, 0.88, 0.07, 0.04,
-    concrete, 0, 1.78, 0.75
-  );
-
-  addBox(
-    universityGate, 24, 0.08, 8,
-    materials.pavement, 0, -0.13, 2
-  );
-
-  addBox(
-    universityGate, 5.7, 0.16, 2,
-    mat('#a6a08c'), 0, -0.03, 3.4
-  );
-
-  addBox(
-    universityGate, 5.1, 0.1, 1.4,
-    materials.grass, 0, 0.08, 3.4
-  );
-
-  scene.add(universityGate);
+  return root;
 }
 
-// ============================================================
-// ROAD
-// ============================================================
+function createPlayer() {
+  player = createCharacter(
+    selectedCharacter,
+    selectedCharacter === 'Swastik' ? COLORS.orange : COLORS.blue
+  );
 
-function createRoadSegment(z) {
+  player.position.set(LANES[START_LANE], 0, PLAYER_START_Z);
+  scene.add(player);
+}
+
+function replacePlayerCharacter() {
+  if (!player) return;
+
+  const oldPosition = player.position.clone();
+  scene.remove(player);
+
+  player = createCharacter(
+    selectedCharacter,
+    selectedCharacter === 'Swastik' ? COLORS.orange : COLORS.blue
+  );
+
+  player.position.copy(oldPosition);
+  scene.add(player);
+}
+
+// Natural run cycle: hip swing, knee fold on recovery, opposite-arm pump,
+// torso counter-twist, forward lean, foot-strike bob, jump and slide poses.
+function animateRunner(model, time, active = true) {
+  const u = model?.userData;
+  if (!u?.rig) return;
+
+  const j = u.joints;
+  const isPlayer = model === player;
+  const sliding = isPlayer && isSliding;
+  const airborne = isPlayer && isJumping;
+
+  const dt = Math.min(0.05, time - (u.lastT ?? time));
+  u.lastT = time;
+  const ease = 1 - Math.exp(-dt * 22);
+
+  const cadence = 9 + Math.max(0, speed - START_SPEED) * 0.3;
+  const p = time * cadence + u.phaseOffset;
+
+  // hip/shoulder = forward swing, knee/elbow = bend
+  const pose = {
+    lHip: 0, rHip: 0, lKnee: 0.05, rKnee: 0.05, lAnkle: 0, rAnkle: 0,
+    lSh: 0, rSh: 0, lEl: 0.15, rEl: 0.15,
+    lean: 0.02 + Math.sin(time * 2) * 0.01, twist: 0, headPitch: 0,
+    rigX: 0, rigY: 0, rigZ: 0
+  };
+
+  if (sliding) {
+    pose.lHip = 0.1; pose.rHip = 0.1; pose.lKnee = 0.15; pose.rKnee = 0.25;
+    pose.lAnkle = 0.3; pose.rAnkle = 0.3;
+    pose.lSh = 0.2; pose.rSh = 0.2; pose.lEl = 0.3; pose.rEl = 0.3;
+    pose.lean = 0; pose.headPitch = 1.0;
+    pose.rigX = -1.3; pose.rigY = 0.22; pose.rigZ = 0.85;
+  } else if (airborne) {
+    pose.lHip = 1.0; pose.lKnee = 1.2; pose.lAnkle = 0.2;
+    pose.rHip = -0.35; pose.rKnee = 1.5; pose.rAnkle = 0.5;
+    pose.lSh = 1.5; pose.rSh = -0.5; pose.lEl = 0.5; pose.rEl = 0.9;
+    pose.lean = 0.1; pose.headPitch = -0.1;
+  } else if (active) {
+    const leg = (phi) => ({
+      hip: 0.25 + 0.65 * Math.sin(phi),
+      knee: 0.35 + 1.15 * Math.max(0, Math.cos(phi)),
+      ankle: 0.45 * Math.max(0, -Math.sin(phi))
+    });
+    const L = leg(p);
+    const R = leg(p + Math.PI);
+
+    pose.lHip = L.hip; pose.lKnee = L.knee; pose.lAnkle = L.ankle;
+    pose.rHip = R.hip; pose.rKnee = R.knee; pose.rAnkle = R.ankle;
+
+    pose.lSh = 0.15 - 0.7 * Math.sin(p);
+    pose.rSh = 0.15 + 0.7 * Math.sin(p);
+    pose.lEl = 1.3 + 0.25 * Math.sin(p);
+    pose.rEl = 1.3 - 0.25 * Math.sin(p);
+
+    pose.lean = 0.2;
+    pose.twist = -0.14 * Math.sin(p);
+    pose.headPitch = -0.18;
+    pose.rigY = 0.08 * Math.abs(Math.sin(p));
+  }
+
+  const set = (obj, axis, v) => {
+    obj.rotation[axis] += (v - obj.rotation[axis]) * ease;
+  };
+
+  set(j.lHip, 'x', -pose.lHip);       set(j.rHip, 'x', -pose.rHip);
+  set(j.lKnee, 'x', pose.lKnee);      set(j.rKnee, 'x', pose.rKnee);
+  set(j.lAnkle, 'x', pose.lAnkle);    set(j.rAnkle, 'x', pose.rAnkle);
+  set(j.lShoulder, 'x', -pose.lSh);   set(j.rShoulder, 'x', -pose.rSh);
+  set(j.lShoulder, 'z', -0.08);       set(j.rShoulder, 'z', 0.08);
+  set(j.lElbow, 'x', -pose.lEl);      set(j.rElbow, 'x', -pose.rEl);
+
+  set(u.upper, 'x', pose.lean);
+  set(u.upper, 'y', pose.twist);
+  set(u.head, 'x', pose.headPitch);
+  set(u.head, 'y', -pose.twist * 0.8);
+
+  set(u.rig, 'x', pose.rigX);
+  u.rig.position.y += (pose.rigY - u.rig.position.y) * ease;
+  u.rig.position.z += (pose.rigZ - u.rig.position.z) * ease;
+
+  if (u.ponytail) {
+    const swing = active && !sliding ? 0.15 + 0.25 * Math.sin(p * 2 + 1) : 0;
+    u.ponytail.rotation.x = (airborne ? 0.6 : 0.35) + swing;
+    u.ponytail.rotation.z = active ? Math.sin(p) * 0.12 : 0;
+  }
+}
+
+// ------------------------------------------------------------
+// CAMPUS WORLD
+// ------------------------------------------------------------
+
+function createWorld() {
+  world = [];
+  obstacles = [];
+  coins = [];
+  decorations = [];
+
+  // Long grass base
+  addBox(
+    scene,
+    [0, -0.38, -90],
+    [240, 0.5, 400],
+    materials.grass,
+    { castShadow: false }
+  );
+
+  // Repeating road segments. Segment 0 is the plaza OUTSIDE the gate and also
+  // gives the runner road under their feet at the start (the old layout had
+  // no road behind the start position). The rest are campus segments.
+  for (let i = 0; i < SEGMENT_COUNT; i++) {
+    world.push(
+      createCampusSegment(SEGMENT_LENGTH - i * SEGMENT_LENGTH, { plaza: i === 0 })
+    );
+  }
+
+  buildMainGate();
+  // SUIIT stands on the right, beyond the boundary wall, beside the gate.
+  buildIITBuilding(50, GATE_Z - 50, -Math.PI / 2);
+  buildDistantHills();
+}
+
+const BUILDING_NAMES_LEFT = [
+  'ACADEMIC BLOCK',
+  'COMPUTER SCIENCE',
+  'CENTRAL LIBRARY',
+  'SCIENCE DEPARTMENT',
+  'STUDENT HOSTEL',
+  'LABORATORY',
+  'ADMINISTRATION'
+];
+
+const BUILDING_NAMES_RIGHT = [
+  'LECTURE HALL',
+  'RESEARCH CENTRE',
+  'DEPARTMENT BLOCK',
+  'CAMPUS AUDITORIUM',
+  'STUDENT CENTRE',
+  'COMMERCE BLOCK',
+  'EXAM HALL'
+];
+
+function createCampusSegment(z, { plaza = false } = {}) {
   const group = new THREE.Group();
   group.position.z = z;
+  group.userData.plaza = plaza;
 
-  addBox(group, 200, 0.2, ROAD_LENGTH, materials.grass, 0, -0.22, 0);
-  addBox(group, ROAD_WIDTH + 3.5, 0.08, ROAD_LENGTH, materials.pavement, 0, -0.06, 0);
-  addBox(group, ROAD_WIDTH, 0.12, ROAD_LENGTH, materials.road, 0, 0, 0);
+  // Main road
+  addBox(group, [0, -0.08, -SEGMENT_LENGTH / 2], [ROAD_WIDTH, 0.2, SEGMENT_LENGTH], materials.road);
 
-  for (const x of [-LANE_WIDTH / 2, LANE_WIDTH / 2]) {
-    addBox(group, 0.07, 0.025, ROAD_LENGTH, materials.white, x, 0.075, 0);
+  for (const side of [-1, 1]) {
+    // Sidewalks
+    addBox(group, [side * 6.1, -0.02, -SEGMENT_LENGTH / 2], [2.2, 0.24, SEGMENT_LENGTH], materials.sidewalk);
+
+    // Road edge lines
+    addBox(group, [side * 5.05, 0.04, -SEGMENT_LENGTH / 2], [0.12, 0.06, SEGMENT_LENGTH], materials.white, { castShadow: false });
+
+    // Maintained lawn between the sidewalk and the boundary wall
+    addMesh(
+      group,
+      lawnGeo,
+      materials.lawn,
+      [side * (7.2 + (WALL_X - 7.2) / 2), -0.115, -SEGMENT_LENGTH / 2],
+      { rotation: [-Math.PI / 2, 0, 0], castShadow: false }
+    );
   }
 
-  for (const x of [-ROAD_WIDTH / 2 + 0.15, ROAD_WIDTH / 2 - 0.15]) {
-    addBox(group, 0.11, 0.03, ROAD_LENGTH, materials.white, x, 0.078, 0);
+  // Broken white lane markings (one draw call)
+  const laneItems = [];
+  for (let zLine = -3; zLine > -SEGMENT_LENGTH; zLine -= 7) {
+    laneItems.push({ p: [-1.55, 0.035, zLine] });
+    laneItems.push({ p: [1.55, 0.035, zLine] });
+  }
+  addInstanced(group, laneGeo, materials.line, laneItems, { receiveShadow: false });
+
+  // Campus lamps on both sidewalks
+  for (const lz of [-9, -25.6, -42.2]) {
+    createLamp(group, -6.5, lz);
+    createLamp(group, 6.5, lz);
+  }
+
+  if (plaza) {
+    // Outside the gate: only the short strip behind the gate (world z 0 -> 4.5)
+    // belongs to the campus, so close the boundary wall there.
+    for (const side of [-1, 1]) {
+      addBox(group, [side * WALL_X, 0.75, -45.75], [0.4, 1.5, 4.5], materials.wallPink);
+    }
+  } else {
+    buildCampusFrontage(group);
   }
 
   scene.add(group);
-  roadSegments.push(group);
+  return group;
 }
 
-function buildRoad() {
-  for (let i = 0; i < 9; i++) {
-    createRoadSegment(-10 - i * ROAD_LENGTH);
+// Buildings, walkways, hedges, trees and benches for one campus segment.
+// Buildings face the road. Trees live in the gaps BETWEEN buildings (and in
+// front of facades, away from the entrance walkways), never inside a building.
+function buildCampusFrontage(group) {
+  for (const side of [-1, 1]) {
+    const slots = side < 0 ? LEFT_SLOTS : RIGHT_SLOTS;
+    const names = side < 0 ? BUILDING_NAMES_LEFT : BUILDING_NAMES_RIGHT;
+
+    const blds = slots.map((c) => ({
+      c,
+      w: random(10.5, 13),   // facade width (runs along the road)
+      d: random(8.5, 10),    // depth away from the road
+      h: random(5.5, 8.5),
+      name: choose(names)
+    }));
+
+    for (const b of blds) {
+      createBuilding(
+        group,
+        [side * (FRONT_X + b.d / 2), 0, b.c],
+        b.w, b.h, b.d, b.name, side
+      );
+
+      createWalkway(group, side, b.c);
+      createHedges(group, side, b);
+
+      // One avenue tree in front of the facade, beside (not on) the entrance path
+      const sgn = Math.random() < 0.5 ? -1 : 1;
+      createTree(
+        group,
+        side * (AVENUE_X + random(-0.3, 0.3)),
+        b.c + sgn * random(4.4, 5.1),
+        choose(['round', 'spread'])
+      );
+    }
+
+    // Gap between the two buildings of this segment
+    const near = blds[0];
+    const far = blds[1];
+    const gapFrom = far.c + far.w / 2;
+    const gapTo = near.c - near.w / 2;
+    createGapCluster(group, side, (gapFrom + gapTo) / 2, (gapTo - gapFrom) / 2, true);
+
+    // Gap between this segment's buildings and the next segment's
+    createGapCluster(group, side, side < 0 ? -1 : -6, 5, false);
+
+    // Boundary wall
+    addBox(group, [side * WALL_X, 0.75, -SEGMENT_LENGTH / 2], [0.4, 1.5, SEGMENT_LENGTH], materials.wallPink);
+    addBox(group, [side * WALL_X, 1.55, -SEGMENT_LENGTH / 2], [0.55, 0.1, SEGMENT_LENGTH], materials.concrete, { castShadow: false });
+  }
+
+  // Zebra crossing between the two gaps
+  const stripes = [];
+  for (let x = -4.2; x <= 4.21; x += 1.05) {
+    stripes.push({ p: [x, 0.03, -27] });
+  }
+  addInstanced(group, zebraGeo, materials.line, stripes, { receiveShadow: false });
+}
+
+// Paved path from the sidewalk to a building's front steps
+function createWalkway(parent, side, z) {
+  addBox(
+    parent,
+    [side * 9.2, 0, z],
+    [4.0, 0.14, 2.4],
+    materials.sidewalk,
+    { castShadow: false }
+  );
+}
+
+// Low hedges either side of the entrance path
+function createHedges(parent, side, b) {
+  const length = b.w / 2 - 0.8 - 2.2;
+  if (length < 1) return;
+
+  for (const s of [-1, 1]) {
+    addBox(
+      parent,
+      [side * 11.3, 0.4, b.c + s * (2.2 + length / 2)],
+      [0.9, 0.8, length],
+      materials.hedge
+    );
   }
 }
 
-// ============================================================
-// TREES AND CAMPUS DECOR
-// ============================================================
+// Trees, shrubs and a bench filling the open ground between two buildings
+function createGapCluster(parent, side, zc, halfWidth, withBench) {
+  const spread = Math.max(0.8, Math.min(2.0, halfWidth - 3.2));
 
-function createTree(parent, x, z, scale = 1, variant = 0) {
+  createTree(parent, side * random(13, 14.2), zc - spread, 'spread');
+  createTree(parent, side * random(17.5, 19.5), zc + spread * 0.6, choose(['round', 'tall']));
+
+  if (withBench) {
+    createBench(parent, side * 9.7, zc, side);
+    createBush(parent, side * 11.4, zc - 1.6, random(0.6, 0.8));
+    createBush(parent, side * 11.4, zc + 1.6, random(0.6, 0.8));
+  } else {
+    createTree(parent, side * random(9.4, 10), zc + spread * 0.2, 'round');
+    createBush(parent, side * 11.6, zc - spread - 1.4, random(0.6, 0.8));
+  }
+}
+
+function lumpyBlob(radius) {
+  const geo = new THREE.IcosahedronGeometry(radius, 2);
+  const p = geo.attributes.position;
+
+  for (let i = 0; i < p.count; i++) {
+    const k = 1 + (Math.random() - 0.5) * 0.28;
+    p.setXYZ(i, p.getX(i) * k, p.getY(i) * k * 0.9, p.getZ(i) * k);
+  }
+
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// kind: 'round' (mango-like), 'spread' (neem/banyan-like, wide and low),
+//       'tall' (ashoka-like, narrow)
+function createTree(parent, x, z, kind = choose(['round', 'round', 'spread', 'tall'])) {
   const tree = new THREE.Group();
   tree.position.set(x, 0, z);
-  tree.scale.setScalar(scale);
+  tree.rotation.y = Math.random() * Math.PI * 2;
 
-  const trunk = new THREE.Mesh(trunkGeometry, materials.trunk);
-  trunk.position.y = 1.2;
-  trunk.castShadow = true;
-  tree.add(trunk);
+  const s = random(0.85, 1.15);
+  const trunkH = kind === 'tall' ? 3.4 : 2.8;
 
-  for (const side of [-1, 1]) {
-    const branch = new THREE.Mesh(branchGeometry, materials.branch);
-    branch.position.set(side * 0.34, 1.75, 0);
-    branch.rotation.z = side * -0.65;
-    branch.castShadow = true;
-    tree.add(branch);
+  const trunk = addCylinder(tree, [0, trunkH / 2, 0], 0.14 * s, 0.28 * s, trunkH, materials.trunk, 8);
+  trunk.rotation.z = (Math.random() - 0.5) * 0.08;
+
+  // [x, y, z, radius, vertical stretch]
+  let blobs;
+  if (kind === 'tall') {
+    blobs = [
+      [0, trunkH + 0.4, 0, 0.95 * s, 1.5],
+      [0.12, trunkH + 1.6, 0.1, 0.78 * s, 1.4],
+      [0, trunkH + 2.6, 0, 0.5 * s, 1.3]
+    ];
+  } else if (kind === 'spread') {
+    blobs = [
+      [0, 3.0, 0, 1.5 * s, 0.7],
+      [1.2 * s, 2.9, 0.4, 1.1 * s, 0.7],
+      [-1.1 * s, 3.0, -0.5, 1.2 * s, 0.7],
+      [0.2, 3.6, 0.1, 1.0 * s, 0.75]
+    ];
+  } else {
+    blobs = [
+      [0, 3.1, 0, 1.3 * s, 1],
+      [0.8 * s, 3.4, 0.3, 0.9 * s, 1],
+      [-0.7 * s, 3.5, -0.2, 0.95 * s, 1],
+      [0.1, 4.1, 0.1, 0.8 * s, 1]
+    ];
   }
 
-  const foliage = [
-    materials.tree,
-    materials.treeLight,
-    materials.treeBright
-  ][variant % 3];
-
-  for (const [cx, cy, cz, size] of [
-    [0, 3.05, 0, 1.05],
-    [-0.48, 3.2, 0.03, 0.78],
-    [0.48, 3.35, -0.04, 0.82],
-    [0.03, 3.75, 0.04, 0.82],
-    [-0.2, 4.12, 0, 0.62]
-  ]) {
-    const crown = new THREE.Mesh(
-      size > 0.8 ? foliageGeometry : smallFoliageGeometry,
-      foliage
-    );
-
-    crown.position.set(cx, cy, cz);
-    crown.scale.set(1.05, 0.94, 0.96);
-    crown.castShadow = true;
-    crown.receiveShadow = true;
-    tree.add(crown);
+  for (const [bx, by, bz, r, ys] of blobs) {
+    addMesh(tree, choose(blobGeos), choose(foliageMats), [bx, by, bz], {
+      scale: [r, r * ys, r]
+    });
   }
-
-  const highlight = new THREE.Mesh(
-    smallFoliageGeometry,
-    materials.treeBright
-  );
-  highlight.scale.setScalar(0.52);
-  highlight.position.set(0.48, 3.85, 0.23);
-  highlight.castShadow = true;
-  tree.add(highlight);
 
   parent.add(tree);
   return tree;
 }
 
-function createFlowerBed(parent, x, z, seed = 0) {
-  const bed = new THREE.Group();
-  bed.position.set(x, 0, z);
-
-  addBox(bed, 2.2, 0.16, 1.2, materials.grassLight, 0, 0.08, 0);
-
-  const flowerMaterials = [
-    materials.flowerPink,
-    materials.flowerYellow,
-    materials.flowerWhite
-  ];
-
-  for (let i = 0; i < 9; i++) {
-    const flower = new THREE.Mesh(
-      flowerGeometry,
-      flowerMaterials[(i + seed) % 3]
-    );
-
-    flower.position.set(
-      -0.85 + (i % 3) * 0.82,
-      0.28 + (i % 2) * 0.04,
-      -0.35 + Math.floor(i / 3) * 0.34
-    );
-
-    flower.castShadow = true;
-    bed.add(flower);
-  }
-
-  parent.add(bed);
+function createBush(parent, x, z, size = 0.7) {
+  return addMesh(
+    parent,
+    choose(blobGeos),
+    choose(foliageMats),
+    [x, size * 0.55, z],
+    { scale: [size * 1.1, size * 0.8, size * 1.1] }
+  );
 }
 
-function createStreetlight(parent, x, z) {
-  const light = new THREE.Group();
-  light.position.set(x, 0, z);
-
-  addBox(light, 0.12, 4.3, 0.12, materials.lampPost, 0, 2.15, 0);
-  addBox(
-    light, 0.9, 0.1, 0.12,
-    materials.lampPost, x < 0 ? 0.32 : -0.32, 4.25, 0
-  );
-
-  const bulb = new THREE.Mesh(
-    new THREE.SphereGeometry(0.2, 10, 8),
-    lampGlowMaterial
-  );
-
-  bulb.position.set(x < 0 ? 0.65 : -0.65, 4.12, 0);
-  light.add(bulb);
-  parent.add(light);
-}
-
-function createBench(parent, x, z) {
+function createBench(parent, x, z, side) {
   const bench = new THREE.Group();
   bench.position.set(x, 0, z);
+  // Seat faces the road
+  bench.rotation.y = side < 0 ? Math.PI / 2 : -Math.PI / 2;
 
-  addBox(bench, 1.65, 0.13, 0.48, materials.bench, 0, 0.65, 0);
-  addBox(bench, 1.65, 0.55, 0.12, materials.bench, 0, 1, -0.2);
-
-  for (const legX of [-0.58, 0.58]) {
-    addBox(bench, 0.12, 0.58, 0.12, materials.iron, legX, 0.32, 0);
+  addBox(bench, [0, 0.5, 0], [1.7, 0.1, 0.5], materials.bench);
+  addBox(bench, [0, 0.86, -0.22], [1.7, 0.5, 0.07], materials.bench);
+  for (const sx of [-0.7, 0.7]) {
+    addBox(bench, [sx, 0.25, 0], [0.08, 0.5, 0.45], materials.black);
   }
 
   parent.add(bench);
+  return bench;
 }
 
-function createDepartmentSign(
-  parent, x, z, title, subtitle = 'SAMBALPUR UNIVERSITY'
-) {
-  const sign = new THREE.Group();
-  sign.position.set(x, 0, z);
-
-  for (const postX of [-1.35, 1.35]) {
-    addBox(sign, 0.13, 2.45, 0.13, materials.trunk, postX, 1.22, 0);
-    addBox(sign, 0.25, 0.12, 0.25, materials.pavement, postX, 0.08, 0);
-  }
-
-  addBox(sign, 3.05, 1.18, 0.16, materials.signBorder, 0, 2.05, 0.02);
-  addBox(sign, 2.85, 0.98, 0.12, materials.sign, 0, 2.05, 0.12);
-  addText(title, 2.72, '#fff5d9', 0, 2.18, 0.2, sign);
-  addText(subtitle, 2.58, '#f2d783', 0, 1.86, 0.2, sign);
-
-  parent.add(sign);
-  return sign;
-}
-
-function createBuilding(parent, x, z, name, labelColor = '#ffffff') {
-  const building = new THREE.Group();
-  building.position.set(x, 0, z);
-
-  addBox(building, 7, 5.5, 9, materials.wall, 0, 2.75, 0);
-  addBox(building, 7.5, 0.35, 9.5, materials.roof, 0, 5.55, 0);
-
-  for (let row = 0; row < 2; row++) {
-    for (let col = 0; col < 3; col++) {
-      addBox(
-        building, 0.9, 1, 0.08,
-        materials.glass,
-        -2 + col * 2,
-        1.7 + row * 1.8,
-        4.56
-      );
-    }
-  }
-
-  for (let row = 0; row < 2; row++) {
-    for (let col = 0; col < 2; col++) {
-      addBox(
-        building, 0.08, 0.9, 1,
-        materials.glass,
-        3.56,
-        1.7 + row * 1.8,
-        -1.8 + col * 2.5
-      );
-    }
-  }
-
-  addBox(building, 7.1, 0.75, 0.12, mat('#28353b'), 0, 4.6, 4.7);
-  addText(name, 4.5, labelColor, 0, 4.62, 4.77, building);
-  addBox(building, 2.5, 0.2, 1.2, materials.pavement, 0, 0.1, 5);
-  addBox(building, 2.1, 0.18, 0.65, materials.pavement, 0, 0.25, 5.65);
-
-  parent.add(building);
-}
-
-const departments = [
-  'BIOTECHNOLOGY',
-  'PG COUNCIL',
-  'COMPUTER SCIENCE',
-  'HISTORY',
-  'PHYSICS DEPARTMENT',
-  'CHEMISTRY DEPARTMENT',
-  'MATHEMATICS',
-  'MANAGEMENT STUDIES',
-  'CENTRAL LIBRARY',
-  'ACADEMIC BLOCK',
-  'ADMINISTRATION',
-  'LIFE SCIENCES',
-  'COMMERCE DEPARTMENT',
-  'ENGLISH DEPARTMENT',
-  'STUDENT CENTRE',
-  'SUIIT'
-];
-
-function createCampusSegment(z, index) {
+function createLamp(parent, x, z) {
   const group = new THREE.Group();
-  group.position.z = z;
+  group.position.set(x, 0, z);
 
-  const treePositions = [
-    [-8.2, -1, 0.9],
-    [8.4, -3.5, 1.05],
-    [-9.2, -8, 1.12],
-    [9.1, -11, 0.92],
-    [-8.1, -16, 0.95],
-    [8.3, -19, 1.15],
-    [-9.4, -24, 1.08],
-    [9.2, -26, 0.9]
-  ];
+  addCylinder(group, [0, 1.75, 0], 0.055, 0.075, 3.5, materials.black, 8);
 
-  treePositions.forEach(([x, treeZ, scale], i) => {
-    createTree(group, x, treeZ, scale, (index + i) % 3);
-  });
-
-  const leftDepartment = departments[(index * 2) % departments.length];
-  const rightDepartment = departments[
-    (index * 2 + 1) % departments.length
-  ];
-
-  createBuilding(group, -14, -9, leftDepartment, '#fff6df');
-  createBuilding(group, 14, -21, rightDepartment, '#fff6df');
-
-  createDepartmentSign(group, -7.3, -7, leftDepartment);
-  createDepartmentSign(group, 7.3, -20, rightDepartment);
-
-  createFlowerBed(group, -6.4, -3.5, index);
-  createFlowerBed(group, 6.4, -15, index + 1);
-  createFlowerBed(group, -6.4, -24, index + 2);
-
-  createStreetlight(group, -6.7, -11);
-  createStreetlight(group, 6.7, -25);
-
-  if (index % 2 === 0) {
-    createBench(group, -6.6, -19);
-  } else {
-    createBench(group, 6.6, -8);
-  }
-
-  addBox(group, 0.3, 1.7, 0.3, materials.signBorder, -5.9, 0.85, -3);
-  addBox(group, 0.22, 1.4, 0.22, materials.sign, -5.9, 0.9, -3);
-
-  scene.add(group);
-  campusSegments.push(group);
-}
-
-function buildCampus() {
-  for (let i = 0; i < 10; i++) {
-    createCampusSegment(-45 - i * CAMPUS_GAP, i);
-  }
-}
-
-// ============================================================
-// HUMAN-LIKE PROCEDURAL RUNNERS
-// ============================================================
-
-function makeRunner(name, color) {
-  const group = new THREE.Group();
-  const isSwastik = String(name).toLowerCase().includes('swastik');
-
-  const outfit = mat(color, 0.68);
-  const pants = mat(isSwastik ? '#242c45' : '#26352f', 0.8);
-  const skin = mat(isSwastik ? '#a96e4d' : '#bc8667', 0.85);
-  const hair = mat(isSwastik ? '#17151a' : '#29201b', 0.9);
-  const shoes = mat(isSwastik ? '#f4f0e8' : '#e8eeee', 0.5);
-  const sole = mat('#25272b', 0.7);
-  const eyeWhite = mat('#ffffff', 0.35);
-  const eyes = mat('#211b18', 0.4);
-  const mouthMat = mat('#683e36');
-  const beltMat = mat('#252a2b');
-  const accent = mat(isSwastik ? '#ffce68' : '#7ce8be', 0.4);
-
-  function ellipsoid(parent, material, x, y, z, sx, sy, sz) {
-    const mesh = new THREE.Mesh(
-      new THREE.SphereGeometry(1, 16, 12),
-      material
-    );
-    mesh.position.set(x, y, z);
-    mesh.scale.set(sx, sy, sz);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    parent.add(mesh);
-    return mesh;
-  }
-
-  function capsule(parent, material, radius, length, x, y, z) {
-    const mesh = new THREE.Mesh(
-      new THREE.CapsuleGeometry(radius, length, 4, 8),
-      material
-    );
-    mesh.position.set(x, y, z);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    parent.add(mesh);
-    return mesh;
-  }
-
-  // Torso, shoulders, neck and waist.
-  ellipsoid(group, outfit, 0, 1.72, 0, 0.38, 0.51, 0.23);
-  ellipsoid(group, outfit, -0.29, 1.98, 0, 0.19, 0.19, 0.22);
-  ellipsoid(group, outfit, 0.29, 1.98, 0, 0.19, 0.19, 0.22);
-  capsule(group, skin, 0.105, 0.15, 0, 2.24, 0);
-
-  addBox(group, 0.045, 0.37, 0.018, accent, 0, 1.78, 0.222);
-  addBox(group, 0.47, 0.105, 0.27, pants, 0, 1.34, 0);
-  addBox(group, 0.40, 0.055, 0.285, beltMat, 0, 1.40, 0);
-  addBox(group, 0.075, 0.065, 0.025, accent, 0, 1.40, 0.15);
-
-  // Head, ears, hairstyle and face.
-  ellipsoid(group, skin, -0.255, 2.52, 0, 0.065, 0.105, 0.07);
-  ellipsoid(group, skin, 0.255, 2.52, 0, 0.065, 0.105, 0.07);
-  ellipsoid(group, skin, 0, 2.55, 0, 0.255, 0.34, 0.245);
-  ellipsoid(group, hair, 0, 2.79, -0.015, 0.265, 0.19, 0.25);
-
-  if (isSwastik) {
-    ellipsoid(group, hair, -0.09, 2.75, 0.185, 0.17, 0.095, 0.09);
-    ellipsoid(group, hair, 0.10, 2.77, 0.17, 0.12, 0.075, 0.075);
-  } else {
-    ellipsoid(group, hair, 0, 2.76, 0.20, 0.20, 0.095, 0.09);
-    ellipsoid(group, hair, -0.14, 2.70, 0.16, 0.095, 0.12, 0.085);
-  }
-
-  for (const side of [-1, 1]) {
-    ellipsoid(group, eyeWhite, side * 0.092, 2.565, 0.219, 0.052, 0.047, 0.025);
-    ellipsoid(group, eyes, side * 0.092, 2.565, 0.241, 0.025, 0.030, 0.012);
-    ellipsoid(group, hair, side * 0.092, 2.635, 0.218, 0.060, 0.018, 0.025);
-  }
-
-  ellipsoid(group, skin, 0, 2.49, 0.247, 0.045, 0.065, 0.045);
-  ellipsoid(group, mouthMat, 0, 2.405, 0.225, 0.065, 0.014, 0.014);
-
-  // Articulated arms.
-  function makeArm(side) {
-    const pivot = new THREE.Group();
-    pivot.position.set(side * 0.39, 1.99, 0);
-    group.add(pivot);
-
-    capsule(pivot, outfit, 0.105, 0.30, 0, -0.22, 0);
-    ellipsoid(pivot, skin, 0, -0.43, 0, 0.09, 0.09, 0.09);
-    capsule(pivot, skin, 0.078, 0.24, 0, -0.59, 0.015);
-    ellipsoid(pivot, skin, 0, -0.78, 0.025, 0.085, 0.10, 0.075);
-    ellipsoid(pivot, skin, side * -0.06, -0.76, 0.075, 0.035, 0.06, 0.035);
-
-    return pivot;
-  }
-
-  const leftArm = makeArm(-1);
-  const rightArm = makeArm(1);
-
-  // Articulated legs and shoes.
-  function makeLeg(side) {
-    const hip = new THREE.Group();
-    hip.position.set(side * 0.145, 1.35, 0);
-    group.add(hip);
-
-    capsule(hip, pants, 0.125, 0.34, 0, -0.30, 0);
-    ellipsoid(hip, pants, 0, -0.49, 0, 0.115, 0.12, 0.12);
-    capsule(hip, pants, 0.085, 0.32, 0, -0.68, 0);
-    ellipsoid(hip, skin, 0, -0.88, 0, 0.075, 0.07, 0.08);
-    ellipsoid(hip, shoes, 0, -0.99, 0.075, 0.14, 0.095, 0.23);
-    ellipsoid(hip, sole, 0, -1.055, 0.085, 0.145, 0.035, 0.23);
-
-    for (let i = 0; i < 3; i++) {
-      addBox(hip, 0.10, 0.012, 0.018, beltMat, 0, -0.94 - i * 0.025, 0.20);
-    }
-
-    return hip;
-  }
-
-  const leftLeg = makeLeg(-1);
-  const rightLeg = makeLeg(1);
-
-  // Backpack and chest detail.
   addBox(
-    group, 0.37, 0.43, 0.15,
-    mat(isSwastik ? '#e1a53c' : '#177456'),
-    0, 1.78, -0.235
+    group,
+    [0, 3.55, 0],
+    [0.42, 0.22, 0.42],
+    makeMaterial(0xffe4a0, 0.3, {
+      emissive: 0xffd06a,
+      emissiveIntensity: 0.6
+    })
   );
 
-  addBox(group, 0.24, 0.105, 0.025, accent, 0.19, 1.84, 0.225);
+  parent.add(group);
+}
 
-  group.userData = {
-    name,
-    leftArm,
-    rightArm,
-    leftLeg,
-    rightLeg
-  };
+// side: -1 = building on the left of the road, +1 = on the right.
+// The facade (local +z) is rotated to face the road.
+function createBuilding(parent, position, width, height, depth, label, side = 1) {
+  const group = new THREE.Group();
+  group.position.set(...position);
+  group.rotation.y = side < 0 ? Math.PI / 2 : -Math.PI / 2;
 
-  group.position.set(0, 0, 2);
-  scene.add(group);
+  const buildingColor = choose([0xd9d2c0, 0xd5dce0, 0xc6d1d8, 0xe3dfd3]);
+
+  addBox(
+    group,
+    [0, height / 2, 0],
+    [width, height, depth],
+    makeMaterial(buildingColor)
+  );
+
+  // Plinth
+  addBox(
+    group,
+    [0, 0.3, 0],
+    [width + 0.12, 0.6, depth + 0.12],
+    materials.darkConcrete
+  );
+
+  // Flat roof
+  addBox(
+    group,
+    [0, height + 0.12, 0],
+    [width + 0.3, 0.25, depth + 0.3],
+    materials.darkConcrete
+  );
+
+  // Rooftop water tank
+  addCylinder(
+    group,
+    [width * 0.25, height + 0.95, -depth * 0.2],
+    0.5, 0.5, 1.2,
+    materials.tank,
+    10
+  );
+
+  // Windows: front rows plus both side walls (the sides are what you see
+  // in the gaps between buildings), all drawn as one instanced mesh.
+  const winItems = [];
+  const rows = Math.max(2, Math.floor((height - 0.8) / 1.6));
+  const colsF = Math.max(3, Math.floor(width / 2.1));
+  const spanF = width - 1.8;
+  const colsS = Math.max(2, Math.floor(depth / 2.4));
+  const spanS = depth - 1.8;
+
+  for (let r = 0; r < rows; r++) {
+    const wy = 1.5 + r * 1.55;
+    if (wy > height - 0.7) break;
+
+    for (let c = 0; c < colsF; c++) {
+      const wx = -spanF / 2 + (spanF * c) / (colsF - 1);
+      if (r === 0 && Math.abs(wx) < 1.5) continue; // keep the doorway clear
+      winItems.push({ p: [wx, wy, depth / 2 + 0.02] });
+    }
+
+    for (const s of [-1, 1]) {
+      for (let c = 0; c < colsS; c++) {
+        const wz = -spanS / 2 + (spanS * c) / (colsS - 1);
+        winItems.push({ p: [s * (width / 2 + 0.02), wy, wz], ry: Math.PI / 2 });
+      }
+    }
+  }
+
+  addInstanced(group, windowGeo, materials.glass, winItems, { castShadow: false });
+
+  // Entrance
+  addBox(
+    group,
+    [0, 1.1, depth / 2 + 0.07],
+    [1.45, 2.2, 0.18],
+    materials.darkConcrete
+  );
+
+  addBox(
+    group,
+    [0, 1.05, depth / 2 + 0.18],
+    [1.05, 2.0, 0.05],
+    materials.glass,
+    { castShadow: false }
+  );
+
+  // Label board
+  addBox(
+    group,
+    [0, height + 0.75, depth / 2 + 0.1],
+    [Math.min(width - 0.8, 8.5), 0.72, 0.15],
+    makeMaterial(0x174e3a)
+  );
+
+  // Canvas texture provides legible text without external assets.
+  const texture = createTextTexture(label, '#ffffff', '#174e3a');
+  const sign = new THREE.Mesh(
+    new THREE.PlaneGeometry(Math.min(width - 1, 8.2), 0.55),
+    new THREE.MeshBasicMaterial({ map: texture, transparent: false })
+  );
+  sign.position.set(0, height + 0.75, depth / 2 + 0.19);
+  group.add(sign);
+
+  // Building steps
+  addBox(
+    group,
+    [0, 0.14, depth / 2 + 0.65],
+    [3.3, 0.28, 1.25],
+    materials.sidewalk
+  );
+
+  parent.add(group);
   return group;
 }
 
-function setCharacter(name) {
-  character = name === 'Swastik' ? 'Swastik' : 'Smruti';
+function createTextTexture(text, foreground = '#ffffff', background = '#174e3a') {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 96;
 
-  document.querySelectorAll('.character-option').forEach((button) => {
-    button.classList.toggle(
-      'selected',
-      button.dataset.character === character
-    );
-  });
+  const context = canvas.getContext('2d');
+  context.fillStyle = background;
+  context.fillRect(0, 0, canvas.width, canvas.height);
+
+  context.fillStyle = foreground;
+  context.font = 'bold 30px Arial';
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+
+  context.fillText(text, canvas.width / 2, canvas.height / 2, 490);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
 }
 
-// ============================================================
-// INITIALIZE WORLD
-// ============================================================
+// ------------------------------------------------------------
+// MAIN GATE (Sambalpur University)
+// ------------------------------------------------------------
+// Modelled on the real gate: a central red tower monument with the flame
+// sculpture, COME TO LEARN / GO TO SERVE plaques and a brick base, flanked
+// by two lettered side arches with yellow-black iron gates and stone pillars.
+//
+// The gate is shifted sideways so that ONE of the two entrance arches sits on
+// the runner's start lane (START_LANE). It stands just BEHIND the start line,
+// so the run begins inside the entrance and the gate scrolls away behind.
 
-buildRoad();
-buildUniversityGate();
-buildCampus();
+// ------------------------------------------------------------
+// MAIN GATE (Sambalpur University) - matched to the reference photo
+// Drop-in replacement for the existing buildMainGate() function.
+// ------------------------------------------------------------
 
-player = makeRunner('Smruti', '#168c68');
-player.visible = false;
+function buildMainGate() {
+  const gate = new THREE.Group();
+  gate.name = 'SambalpurUniversityMainGate';
+  gate.userData.isGate = true;
 
-document.querySelectorAll('.character-option').forEach((button) => {
-  button.addEventListener('click', () => {
-    setCharacter(button.dataset.character);
-  });
-});
+  const OX = GATE_OFFSET_X;     // world x of the central monument
+  const PILLAR_X = 9.3;         // outer stone pillar centre
+  const PILLAR_H = 5.9;         // pillars are LOW in the photo (about 6 units)
+  const PLAT_Y = 1.0;           // top of the brick platform
 
-// ============================================================
-// SCREENS AND LOGIN
-// ============================================================
+  // Side arch: straight lettered beam + quarter-ellipse leg that swoops to the ground
+  const BEAM_BOT = 3.9;
+  const BEAM_TOP = 5.0;
+  const BEAM_END = 10.3;        // beam overhangs the pillar on the outside
+  const ARCH_XC = 4.2;          // where the beam turns into the curved leg
+  const LEG_RX_OUT = 2.0;       // leg horizontal radius (outer edge)
+  const LEG_RX_IN = 1.15;       // leg horizontal radius (inner edge)
 
-const screenIds = [
-  'login-screen',
-  'home-screen',
-  'room-screen',
-  'pause-screen',
-  'over-screen',
-  'countdown-screen'
-];
+  const mat = (opts) => new THREE.MeshStandardMaterial(opts);
 
-function hideScreens() {
-  screenIds.forEach((id) => $(id)?.classList.add('hidden'));
-}
-
-function showScreen(id) {
-  hideScreens();
-  $(id)?.classList.remove('hidden');
-}
-
-function showToast(message) {
-  const toast = $('toast');
-  if (!toast) return;
-
-  toast.textContent = message;
-  toast.classList.remove('hidden');
-
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => {
-    toast.classList.add('hidden');
-  }, 2600);
-}
-
-function safeName(value) {
-  return String(value || '')
-    .trim()
-    .replace(/\s+/g, ' ')
-    .slice(0, 18);
-}
-
-$('login-form').addEventListener('submit', (event) => {
-  event.preventDefault();
-
-  const name = safeName($('player-name').value);
-
-  if (name.length < 2 || !/^[\p{L}\p{N} _.-]+$/u.test(name)) {
-    $('login-error').textContent =
-      'Enter a valid name using 2–18 characters.';
-    return;
+  function canvasTex(w, h, draw, rx = 1, ry = 1) {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    draw(c.getContext('2d'), w, h);
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.repeat.set(rx, ry);
+    t.anisotropy = 8;
+    return t;
   }
 
-  playerName = name;
-  $('login-error').textContent = '';
-  $('welcome-player-name').textContent = playerName;
-  $('change-name-button').classList.remove('hidden');
-  showScreen('home-screen');
-});
+  function brickTex(bw, bh, light, rx, ry) {
+    return canvasTex(256, 256, (g, w, h) => {
+      g.fillStyle = '#cdbfae';
+      g.fillRect(0, 0, w, h);
+      let seed = 7;
+      const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+      for (let r = 0; r < h / bh; r++) {
+        const off = (r % 2) * bw / 2;
+        for (let x = -bw; x < w + bw; x += bw) {
+          g.fillStyle = `hsl(10, 55%, ${light + rnd() * 9}%)`;
+          g.fillRect(x + off + 1, r * bh + 1, bw - 2, bh - 2);
+        }
+      }
+    }, rx, ry);
+  }
 
-$('change-name-button').addEventListener('click', () => {
-  $('player-name').value = playerName;
-  showScreen('login-screen');
-});
+  function stoneTex(rx, ry) {
+    return canvasTex(128, 256, (g, w, h) => {
+      g.fillStyle = '#c9c3b4';
+      g.fillRect(0, 0, w, h);
+      let seed = 11;
+      const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+      for (let i = 0; i < 700; i++) {
+        g.fillStyle = rnd() < 0.5 ? 'rgba(80,75,65,0.12)' : 'rgba(255,250,240,0.12)';
+        g.fillRect(rnd() * w, rnd() * h, 2, 2);
+      }
+      g.strokeStyle = 'rgba(70,65,55,0.35)';
+      g.lineWidth = 2;
+      for (let y = 0; y < h; y += 64) {
+        g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke();
+      }
+    }, rx, ry);
+  }
 
-// ============================================================
-// OBSTACLES, COINS AND POWER-UPS
-// ============================================================
+  function latticeTex(w, h, step) {
+    return canvasTex(w, h, (g) => {
+      g.clearRect(0, 0, w, h);
+      g.strokeStyle = '#8d949a';
+      g.lineWidth = 4;
+      for (let i = -h; i < w + h; i += step) {
+        g.beginPath(); g.moveTo(i, 0); g.lineTo(i + h, h); g.stroke();
+        g.beginPath(); g.moveTo(i, h); g.lineTo(i + h, 0); g.stroke();
+      }
+      g.lineWidth = 12;
+      g.beginPath(); g.moveTo(0, 6); g.lineTo(w, 6); g.stroke();
+      g.beginPath(); g.moveTo(0, h - 6); g.lineTo(w, h - 6); g.stroke();
+    });
+  }
 
-function clearRaceObjects() {
-  for (const item of obstacles) scene.remove(item.mesh);
-  for (const item of pickups) scene.remove(item.mesh);
+  // ---------- materials ----------
+  const stoneMat  = mat({ map: stoneTex(1, 2), roughness: 0.9 });
+  const brickMat  = mat({ map: brickTex(64, 16, 34, 3, 0.25), roughness: 0.9 });
+  const paveMat   = mat({ map: brickTex(32, 16, 38, 24, 8), roughness: 0.95 });
+  const concrete  = mat({ color: 0xb4b3ad, roughness: 0.9 });
+  const concreteL = mat({ color: 0xd2d1cb, roughness: 0.88 });
+  const white     = mat({ color: 0xe9e8e2, roughness: 0.8 });
+  const pink      = mat({ color: 0xd78aa0, roughness: 0.9 });
+  const red       = mat({ color: 0xc2452c, roughness: 0.75 });
+  const dark      = mat({ color: 0x1a1b1d, roughness: 0.45, metalness: 0.5 });
+  const yellow    = mat({ color: 0xf2b705, roughness: 0.55 });
 
-  obstacles.length = 0;
-  pickups.length = 0;
+  const stripeTex = canvasTex(128, 32, (g) => {
+    for (let i = 0; i < 4; i++) {
+      g.fillStyle = i % 2 ? '#111111' : '#f2c100';
+      g.fillRect(i * 32, 0, 32, 32);
+    }
+  }, 3, 1);
+  const curbMat = mat({ map: stripeTex, roughness: 0.8 });
+
+  const checkerMat = mat({
+    map: canvasTex(128, 128, (g) => {
+      for (let r = 0; r < 4; r++) {
+        for (let c = 0; c < 4; c++) {
+          g.fillStyle = (r + c) % 2 ? '#ffffff' : '#c9302c';
+          g.fillRect(c * 32, r * 32, 32, 32);
+        }
+      }
+    }),
+    roughness: 0.8
+  });
+
+  const tileMat = mat({
+    map: canvasTex(256, 384, (g, w, h) => {
+      g.fillStyle = '#b7bcc0';
+      g.fillRect(0, 0, w, h);
+      g.strokeStyle = '#7d848a';
+      g.lineWidth = 4;
+      for (let i = 0; i <= 4; i++) {
+        g.beginPath(); g.moveTo(i * w / 4, 0); g.lineTo(i * w / 4, h); g.stroke();
+      }
+      for (let j = 0; j <= 6; j++) {
+        g.beginPath(); g.moveTo(0, j * h / 6); g.lineTo(w, j * h / 6); g.stroke();
+      }
+    }),
+    roughness: 0.3,
+    metalness: 0.3
+  });
+
+  // ---------- helpers ----------
+  const boxCache = new Map();
+  function boxGeo(w, h, d) {
+    const k = `${w}|${h}|${d}`;
+    if (!boxCache.has(k)) boxCache.set(k, new THREE.BoxGeometry(w, h, d));
+    return boxCache.get(k);
+  }
+
+  function box(material, x, y, z, w, h, d, shadow = true) {
+    const m = new THREE.Mesh(boxGeo(w, h, d), material);
+    m.position.set(x, y, z);
+    m.castShadow = shadow;
+    m.receiveShadow = true;
+    gate.add(m);
+    return m;
+  }
+
+  function plane(texture, w, h, x, y, z, extra = {}) {
+    const m = new THREE.Mesh(
+      new THREE.PlaneGeometry(w, h),
+      mat({ map: texture, transparent: true, alphaTest: 0.05, roughness: 0.7, ...extra })
+    );
+    m.position.set(x, y, z);
+    gate.add(m);
+    return m;
+  }
+
+  // ---------- red brick pavement apron ----------
+  box(paveMat, -OX, 0.05, 4.5, 48, 0.12, 17, false);
+
+  // =====================================================
+  // CENTRAL MONUMENT
+  // =====================================================
+
+  // upper brick platform
+  box(brickMat, 0, 0.5, 0.2, 6.0, 1.0, 2.4);
+  box(concreteL, 0, 0.1, 0.2, 6.2, 0.2, 2.6, false);
+  box(concreteL, 0, PLAT_Y + 0.04, 0.2, 6.2, 0.08, 2.6, false);
+
+  // wide low brick step in front (the red-brick base seen in the photo)
+  box(brickMat, 0, 0.28, 2.0, 7.4, 0.56, 1.3);
+  box(white, 0, 0.6, 2.0, 7.6, 0.08, 1.5, false);
+
+  // red tower slab: top cut diagonally, taller on the left
+  const slabShape = new THREE.Shape();
+  slabShape.moveTo(-1.5, 0);
+  slabShape.lineTo(1.5, 0);
+  slabShape.lineTo(1.5, 6.1);
+  slabShape.lineTo(-1.5, 8.4);
+  slabShape.closePath();
+  const slabGeo = new THREE.ExtrudeGeometry(slabShape, { depth: 1.0, bevelEnabled: false });
+  slabGeo.translate(0, 0, -0.5);
+  const slab = new THREE.Mesh(slabGeo, red);
+  slab.position.set(0, PLAT_Y, 0);
+  slab.castShadow = slab.receiveShadow = true;
+  gate.add(slab);
+
+  // grey tile block at the top right, behind the cut
+  box(tileMat, 0.65, 8.2, -0.1, 1.7, 2.4, 0.9);
+
+  // tall stone columns either side of the tower
+  box(stoneMat, -1.95, 5.4, 0.1, 0.4, 8.8, 0.5);
+  box(stoneMat, 2.1, 4.25, 0.1, 0.5, 6.5, 0.5);
+
+  // two sweeping concrete arcs
+  function sweepArc(cx, cy, R) {
+    const m = new THREE.Mesh(new THREE.TorusGeometry(R, 0.27, 10, 40, Math.PI / 2), concrete);
+    m.rotation.z = Math.PI / 2;
+    m.scale.set(1, 1, 2.2);
+    m.position.set(cx, cy, 0.85);
+    m.castShadow = true;
+    gate.add(m);
+  }
+  sweepArc(1.5, 1.6, 3.4);
+  sweepArc(3.0, 2.6, 4.9);
+  box(concrete, 1.85, 5.0, 0.85, 0.7, 0.54, 0.6);
+
+  // canopy arms: left one slopes DOWN toward the right, right one is flat
+  box(concreteL, -2.2, 9.0, 0.1, 2.0, 0.32, 1.2).rotation.z = -0.3;
+  box(concreteL, 2.7, 7.55, 0.1, 1.9, 0.32, 1.2);
+
+  // emblem (small, as in the photo)
+  const emblemTex = canvasTex(256, 256, (g) => {
+    g.clearRect(0, 0, 256, 256);
+    g.fillStyle = '#ece6d6';
+    g.beginPath(); g.arc(128, 128, 120, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = '#2b3a55'; g.lineWidth = 10;
+    g.beginPath(); g.arc(128, 128, 108, 0, Math.PI * 2); g.stroke();
+    g.lineWidth = 4;
+    g.beginPath(); g.arc(128, 128, 74, 0, Math.PI * 2); g.stroke();
+    g.fillStyle = '#2b3a55';
+    g.font = 'bold 64px Georgia, serif';
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText('SU', 128, 132);
+  });
+  plane(emblemTex, 0.85, 0.85, 0.1, 5.6, 0.53);
+
+  // small dark caption under the emblem
+  const labelTex = canvasTex(512, 128, (g, w, h) => {
+    g.clearRect(0, 0, w, h);
+    g.fillStyle = '#2a0f0c';
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.font = 'bold 44px Arial, sans-serif';
+    g.fillText('SAMBALPUR UNIVERSITY', w / 2, 38, w - 20);
+    g.font = 'bold 30px Arial, sans-serif';
+    g.fillText("ACCREDITED 'A' GRADE  2015", w / 2, 92, w - 20);
+  });
+  plane(labelTex, 2.0, 0.5, 0.1, 4.85, 0.53);
+
+  // flame sculpture on a white pedestal between the plaques
+  const torch = new THREE.Group();
+  torch.position.set(0.1, 0, 0.95);
+  gate.add(torch);
+
+  const pedestal = new THREE.Mesh(boxGeo(0.9, 0.8, 0.8), white);
+  pedestal.position.y = 1.4;
+  pedestal.castShadow = true;
+  torch.add(pedestal);
+
+  const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.14, 0.6, 10), dark);
+  stem.position.y = 2.1;
+  torch.add(stem);
+
+  const bowl = new THREE.Mesh(new THREE.ConeGeometry(0.5, 0.8, 20), dark);
+  bowl.rotation.x = Math.PI;
+  bowl.position.y = 2.8;
+  bowl.castShadow = true;
+  torch.add(bowl);
+
+  const flame = new THREE.Mesh(
+    new THREE.ConeGeometry(0.4, 1.0, 16),
+    mat({ color: 0xff5a1f, emissive: 0xff4a10, emissiveIntensity: 1.4, roughness: 0.5 })
+  );
+  flame.position.y = 3.65;
+  torch.add(flame);
+
+  const flameCore = new THREE.Mesh(
+    new THREE.ConeGeometry(0.22, 0.65, 12),
+    mat({ color: 0xffc043, emissive: 0xffa020, emissiveIntensity: 1.6, roughness: 0.5 })
+  );
+  flameCore.position.y = 3.55;
+  torch.add(flameCore);
+
+  gateFlame = flame;
+
+  // COME TO LEARN / GO TO SERVE plaques
+  function plaque(x, line1, line2) {
+    const t = canvasTex(256, 160, (g, w, h) => {
+      g.fillStyle = '#16181b'; g.fillRect(0, 0, w, h);
+      g.strokeStyle = '#e8e8e8'; g.lineWidth = 6;
+      g.strokeRect(8, 8, w - 16, h - 16);
+      g.fillStyle = '#ffffff';
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.font = 'bold 52px Arial, sans-serif';
+      g.fillText(line1, w / 2, 55, w - 30);
+      g.fillText(line2, w / 2, 112, w - 30);
+    });
+    const faceMat = mat({ map: t, roughness: 0.6 });
+    const m = new THREE.Mesh(boxGeo(1.5, 0.95, 0.25), [dark, dark, dark, dark, faceMat, dark]);
+    m.position.set(x, PLAT_Y + 0.55, 1.0);
+    m.castShadow = true;
+    gate.add(m);
+  }
+  plaque(-1.45, 'COME TO', 'LEARN');
+  plaque(1.35, 'GO TO', 'SERVE');
+
+  // grey lattice railing around the front of the platform
+  const frontLattice = latticeTex(1024, 160, 40);
+  plane(frontLattice, 5.8, 0.9, 0, PLAT_Y + 0.5, 1.25, { side: THREE.DoubleSide });
+  for (const s of [-1, 1]) {
+    const sideLattice = latticeTex(512, 160, 40);
+    const p = plane(sideLattice, 2.0, 0.9, s * 2.9, PLAT_Y + 0.5, 0.25, { side: THREE.DoubleSide });
+    p.rotation.y = Math.PI / 2;
+  }
+
+  // =====================================================
+  // SIDE ARCHES (left = Odia text, right = English text)
+  // =====================================================
+
+  // Yellow + black sliding iron gate leaf
+  function leaf(sx, outer, w) {
+    const H = 1.7;
+    const inner = outer - sx * w;
+    const cx = (outer + inner) / 2;
+    box(dark, cx, 0.3, 0, w, 0.5, 0.12, false);        // solid lower panel
+    box(dark, cx, 0.62, 0, w, 0.08, 0.12, false);      // middle rail
+    box(dark, cx, H - 0.06, 0, w, 0.12, 0.12, false);  // top rail
+    box(dark, outer, H / 2, 0, 0.1, H, 0.14, false);   // end posts
+    box(dark, inner, H / 2, 0, 0.1, H, 0.14, false);
+    const bars = Math.max(2, Math.round(w / 0.16));
+    for (let i = 1; i < bars; i++) {
+      box(yellow, outer - sx * (w * i / bars), 1.15, 0, 0.06, 1.0, 0.06, false);
+    }
+  }
+
+  for (const s of [-1, 1]) {
+    const PX = s * PILLAR_X;
+
+    // stone pillar with cap and footing
+    box(stoneMat, PX, PILLAR_H / 2, 0, 1.5, PILLAR_H, 1.4);
+    box(concreteL, PX, PILLAR_H + 0.12, 0, 1.8, 0.25, 1.7);
+    box(concrete, PX, 0.2, 0, 1.8, 0.4, 1.7, false);
+
+    // lettered beam: overhangs the pillar, runs inward to the start of the curve
+    const xEnd = s * BEAM_END;
+    const xc = s * ARCH_XC;
+    const beamLen = Math.abs(xEnd - xc);
+
+    // Visible part of the beam is between the pillar's inner face and the curve.
+    // Centre the lettering there (u runs along +x on the front face).
+    const visA = Math.min(s * (PILLAR_X - 0.75), xc);
+    const visB = Math.max(s * (PILLAR_X - 0.75), xc);
+    const u0 = Math.min(xEnd, xc);
+    const centreU = ((visA + visB) / 2 - u0) / beamLen;
+
+    const textTex = canvasTex(1024, 176, (g, w, h) => {
+      g.fillStyle = '#d0cfca';
+      g.fillRect(0, 0, w, h);
+      const text = s < 0 ? 'ସମ୍ବଲପୁର ବିଶ୍ୱବିଦ୍ୟାଳୟ' : 'SAMBALPUR UNIVERSITY';
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      g.font = s < 0
+        ? "bold 100px 'Nirmala UI','Noto Sans Oriya','Kalinga','Lohit Odia',sans-serif"
+        : 'bold 100px Arial, sans-serif';
+      const tx = w * centreU;
+      g.fillStyle = '#12561f';
+      g.fillText(text, tx + 3, h / 2 + 4, w * 0.64);
+      g.fillStyle = '#1e9e3a';
+      g.fillText(text, tx, h / 2, w * 0.64);
+    });
+    const textMat = mat({ map: textTex, roughness: 0.85 });
+
+    const beam = new THREE.Mesh(
+      boxGeo(beamLen, BEAM_TOP - BEAM_BOT, 1.2),
+      [concreteL, concreteL, concreteL, concreteL, textMat, concreteL]
+    );
+    beam.position.set((xEnd + xc) / 2, (BEAM_TOP + BEAM_BOT) / 2, 0);
+    beam.castShadow = beam.receiveShadow = true;
+    gate.add(beam);
+
+    // curved leg: quarter-ellipse band, tangent to the beam at the top,
+    // vertical-ish at the ground, about 0.85 thick at the foot
+    const shape = new THREE.Shape();
+    if (s < 0) {
+      shape.absellipse(0, 0, LEG_RX_OUT, BEAM_TOP, 0, Math.PI / 2, false, 0);
+      shape.absellipse(0, 0, LEG_RX_IN, BEAM_BOT, Math.PI / 2, 0, true, 0);
+    } else {
+      shape.absellipse(0, 0, LEG_RX_OUT, BEAM_TOP, Math.PI / 2, Math.PI, false, 0);
+      shape.absellipse(0, 0, LEG_RX_IN, BEAM_BOT, Math.PI, Math.PI / 2, true, 0);
+    }
+    shape.closePath();
+    const legGeo = new THREE.ExtrudeGeometry(shape, {
+      depth: 1.2, bevelEnabled: false, curveSegments: 32
+    });
+    legGeo.translate(0, 0, -0.6);
+    const leg = new THREE.Mesh(legGeo, concreteL);
+    leg.position.set(xc, 0, 0);
+    leg.castShadow = leg.receiveShadow = true;
+    gate.add(leg);
+
+    // Iron gate leaf next to the pillar.
+    // Left arch: wide leaf like the photo. Right arch (the runner's lane):
+    // a short leaf so the camera sightline through the opening stays clear.
+    leaf(s, s * (PILLAR_X - 0.75), s < 0 ? 3.4 : 1.5);
+
+    // yellow-black striped curb at the foot of the pillar
+    box(curbMat, PX, 0.18, 1.2, 2.2, 0.36, 0.6, false);
+
+    // red and white checker panel at the outer end
+    box(checkerMat, s * (PILLAR_X + 1.75), 0.55, 0.55, 1.5, 1.1, 0.8);
+
+    // security guard inside the entrance
+    createSecurityGuard(gate, s * 7.8, 1.3);
+  }
+
+  // boundary wall continues from each outer pillar to the campus wall
+  function wall(x0, x1) {
+    const len = x1 - x0;
+    if (len < 0.2) return;
+    const cx = (x0 + x1) / 2 - OX;
+    box(pink, cx, 0.75, 0, len, 1.5, 0.5);
+    box(concrete, cx, 1.55, 0, len + 0.1, 0.12, 0.6, false);
+  }
+  wall(-WALL_X, OX - PILLAR_X - 0.75);
+  wall(OX + PILLAR_X + 0.75, WALL_X);
+
+  // Black LED display board on a yellow pole, just outside the right pillar
+  const ledX = 11.2;
+  const ledTex = canvasTex(256, 200, (g, w, h) => {
+    const gr = g.createLinearGradient(0, 0, w, h);
+    gr.addColorStop(0, '#0b0e13');
+    gr.addColorStop(1, '#1b2431');
+    g.fillStyle = gr; g.fillRect(0, 0, w, h);
+    g.fillStyle = 'rgba(255,255,255,0.05)';
+    g.beginPath();
+    g.moveTo(0, h * 0.55); g.lineTo(w * 0.6, 0); g.lineTo(w, 0); g.lineTo(w * 0.3, h);
+    g.lineTo(0, h); g.closePath(); g.fill();
+  });
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 3.1, 8), yellow);
+  pole.position.set(ledX, 1.55, 1.2);
+  gate.add(pole);
+  box(dark, ledX, 3.85, 1.2, 2.25, 1.75, 0.2);
+  plane(ledTex, 2.05, 1.55, ledX, 3.85, 1.31, { transparent: false, alphaTest: 0 });
+
+  // The gate stands just behind the start line; the runner begins right at
+  // the entrance and runs away from it into the campus.
+  gate.position.set(OX, 0, GATE_Z);
+  scene.add(gate);
+  decorations.push(gate);
+  return gate;
+}
+// ------------------------------------------------------------
+// SUIIT BUILDING (beside the main gate)
+// ------------------------------------------------------------
+
+function buildIITBuilding(x = 40, z = -58, rotY = -Math.PI / 2) {
+  const b = new THREE.Group();
+  b.name = 'SUIITBuilding';
+  b.userData.isBuilding = true;
+
+  function tex(w, h, draw, rx = 1, ry = 1) {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    draw(c.getContext('2d'), w, h);
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.repeat.set(rx, ry);
+    t.anisotropy = 8;
+    return t;
+  }
+  const mat = (o) => new THREE.MeshStandardMaterial(o);
+
+  const boxCache = new Map();
+  const boxGeo = (w, h, d) => {
+    const k = `${w}|${h}|${d}`;
+    if (!boxCache.has(k)) boxCache.set(k, new THREE.BoxGeometry(w, h, d));
+    return boxCache.get(k);
+  };
+  function box(material, x, y, zz, w, h, d, shadow = true) {
+    const m = new THREE.Mesh(boxGeo(w, h, d), material);
+    m.position.set(x, y, zz);
+    m.castShadow = shadow;
+    m.receiveShadow = true;
+    b.add(m);
+    return m;
+  }
+  function plane(material, w, h, x, y, zz) {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), material);
+    m.position.set(x, y, zz);
+    b.add(m);
+    return m;
+  }
+
+  // glass facade with mullions, drawn on a canvas
+  function glassMat(cols, rows, pw, ph, base = ['#6f9fc4', '#3f6f96']) {
+    const t = tex(pw, ph, (g, w, h) => {
+      const gr = g.createLinearGradient(0, 0, 0, h);
+      gr.addColorStop(0, base[0]); gr.addColorStop(1, base[1]);
+      g.fillStyle = gr; g.fillRect(0, 0, w, h);
+      g.strokeStyle = '#e8eef2'; g.lineWidth = 6;
+      for (let i = 0; i <= cols; i++) { g.beginPath(); g.moveTo(i * w / cols, 0); g.lineTo(i * w / cols, h); g.stroke(); }
+      for (let j = 0; j <= rows; j++) { g.beginPath(); g.moveTo(0, j * h / rows); g.lineTo(w, j * h / rows); g.stroke(); }
+    });
+    return mat({ map: t, roughness: 0.2, metalness: 0.35 });
+  }
+
+  // materials
+  const cream   = mat({ color: 0xe2c68c, roughness: 0.9 });
+  const white   = mat({ color: 0xf1efe9, roughness: 0.85 });
+  const orange  = mat({ color: 0xc9733c, roughness: 0.9 });
+  const trim    = mat({ color: 0xd8d4c8, roughness: 0.9 });
+  const dark    = mat({ color: 0x1e2a33, roughness: 0.6 });
+  const carpet  = mat({ color: 0xb3202a, roughness: 1 });
+  const potMat  = mat({ color: 0xb5603a, roughness: 0.9 });
+  const leaf    = mat({ color: 0x2f7d32, roughness: 1 });
+  const flowers = [0xe8485f, 0xf2b632, 0xf06fa8, 0xffffff].map((c) => mat({ color: c, roughness: 0.8 }));
+
+  // central block
+  box(white, 0, 4.8, 0, 6.4, 9.6, 11);
+  for (const s of [-1, 1]) {
+    box(cream, s * 4.9, 6.0, 0, 3.4, 12, 10);
+    box(trim, s * 4.9, 12.1, 0, 3.6, 0.25, 10.2);
+  }
+  box(trim, 0, 9.7, 0, 6.6, 0.2, 11.2);
+
+  // blue glass front
+  plane(glassMat(6, 6, 512, 512), 5.2, 5.0, 0, 5.9, 5.52);
+
+  // name banner
+  const signMat = mat({
+    map: tex(2048, 297, (g, w, h) => {
+      g.fillStyle = '#f6f5f0'; g.fillRect(0, 0, w, h);
+      g.strokeStyle = '#1f3a73'; g.lineWidth = 10; g.strokeRect(8, 8, w - 16, h - 16);
+      g.fillStyle = '#1f3a73'; g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.font = 'bold 96px Arial, sans-serif';
+      g.fillText('SAMBALPUR UNIVERSITY', w / 2, 90);
+      g.font = 'bold 72px Arial, sans-serif';
+      g.fillText('INSTITUTE OF INFORMATION TECHNOLOGY', w / 2, 205);
+    }),
+    roughness: 0.7
+  });
+  box(trim, 0, 9.0, 5.52, 6.4, 1.0, 0.12);
+  plane(signMat, 6.2, 0.9, 0, 9.0, 5.6);
+
+  // entrance: dark doorway, canopy with flower garland, steps
+  box(dark, 0, 1.9, 5.5, 2.8, 2.6, 0.2);
+  box(trim, 0, 3.3, 6.2, 4.2, 0.25, 1.6);
+  for (let i = 0; i < 12; i++) {
+    const f = new THREE.Mesh(new THREE.SphereGeometry(0.14, 6, 6), flowers[i % 4]);
+    f.position.set(-1.9 + i * 0.345, 3.1, 6.95);
+    b.add(f);
+  }
+  [[0.6, 6.2], [0.4, 7.1], [0.2, 8.0]].forEach(([h, zz]) =>
+    box(trim, 0, h / 2, zz, 7.2, h, 0.9));
+
+  // cream mid wings
+  const winTex = tex(512, 352, (g, w, h) => {
+    g.fillStyle = '#e2c68c'; g.fillRect(0, 0, w, h);
+    g.fillStyle = '#34505f';
+    for (const y of [40, 200]) for (let i = 0; i < 4; i++) g.fillRect(14 + i * 124, y, 112, 110);
+  });
+  const winMat = mat({ map: winTex, roughness: 0.35, metalness: 0.2 });
+
+  for (const s of [-1, 1]) {
+    box(cream, s * 10.8, 4.25, -1, 8.4, 8.5, 10);
+    box(trim, s * 10.8, 8.6, -1, 8.6, 0.2, 10.2);
+    plane(winMat, 7.6, 5.2, s * 10.8, 5.0, 4.02);
+
+    // orange end wings
+    box(orange, s * 19.5, 2.7, 0.5, 9, 5.4, 11);
+    box(trim, s * 19.5, 5.5, 0.5, 9.2, 0.2, 11.2);
+    plane(glassMat(4, 2, 512, 280, ['#5d8aa8', '#2f566f']), 7.6, 3.6, s * 19.5, 2.6, 6.02);
+    box(cream, s * 19.5, 7.5, -1, 9, 4, 8);
+    plane(glassMat(4, 1, 512, 140, ['#5d8aa8', '#2f566f']), 7.6, 2.0, s * 19.5, 7.5, 3.02);
+  }
+
+  // lawn court with red carpet
+  const courtMat = mat({
+    map: tex(1024, 400, (g, w, h) => {
+      g.fillStyle = '#2f9e4a'; g.fillRect(0, 0, w, h);
+      g.strokeStyle = 'rgba(255,255,255,0.8)'; g.lineWidth = 5;
+      g.strokeRect(20, 20, w - 40, h - 40);
+      g.beginPath(); g.moveTo(w / 2, 20); g.lineTo(w / 2, h - 20); g.stroke();
+      g.strokeRect(20, 110, 200, 180); g.strokeRect(w - 220, 110, 200, 180);
+    }),
+    roughness: 1
+  });
+  const lawn = new THREE.Mesh(new THREE.PlaneGeometry(46, 17), courtMat);
+  lawn.rotation.x = -Math.PI / 2;
+  lawn.position.set(0, 0.03, 17.5);
+  lawn.receiveShadow = true;
+  b.add(lawn);
+
+  const rug = new THREE.Mesh(new THREE.PlaneGeometry(5, 15), carpet);
+  rug.rotation.x = -Math.PI / 2;
+  rug.position.set(0, 0.05, 16.5);
+  b.add(rug);
+
+  // potted plants along the facade
+  const potGeo = new THREE.CylinderGeometry(0.25, 0.2, 0.4, 8);
+  const bushGeo = new THREE.SphereGeometry(0.42, 8, 8);
+  const bloomGeo = new THREE.SphereGeometry(0.1, 6, 6);
+  for (let i = -11; i <= 11; i++) {
+    const px = i * 2.0;
+    if (Math.abs(px) < 4.2) continue;
+    const pz = Math.abs(px) > 15 ? 7.0 : 5.5;
+    const pot = new THREE.Mesh(potGeo, potMat);
+    pot.position.set(px, 0.2, pz); b.add(pot);
+    const bush = new THREE.Mesh(bushGeo, leaf);
+    bush.position.set(px, 0.75, pz); bush.castShadow = true; b.add(bush);
+    const bloom = new THREE.Mesh(bloomGeo, flowers[Math.abs(i) % 4]);
+    bloom.position.set(px + 0.2, 1.0, pz + 0.2); b.add(bloom);
+  }
+
+  // place in the world: local +z (front) faces the road
+  b.position.set(x, 0, z);
+  b.rotation.y = rotY;
+  scene.add(b);
+  decorations.push(b);
+  return b;
 }
 
-function makeCoin(x, z, type = 'coin') {
-  const isBoost = type === 'boost';
+function buildDistantHills() {
+  for (let i = 0; i < 14; i++) {
+    const hill = addMesh(
+      scene,
+      new THREE.SphereGeometry(1, 8, 6),
+      makeMaterial(choose([0x78a979, 0x669b70, 0x8dbb88])),
+      [
+        random(-105, 105),
+        random(3, 8),
+        random(-180, -85)
+      ],
+      { scale: [random(9, 20), random(5, 12), random(12, 24)], castShadow: false }
+    );
+    decorations.push(hill);
+  }
+}
 
-  const mesh = new THREE.Mesh(
-    isBoost
-      ? new THREE.OctahedronGeometry(0.42, 0)
-      : new THREE.TorusGeometry(0.32, 0.11, 8, 16),
-    isBoost
-      ? mat('#42e9ff', 0.25, 0.4)
-      : materials.gold
+// ------------------------------------------------------------
+// SECURITY GUARDS
+// ------------------------------------------------------------
+
+function createSecurityGuard(parent, x, z) {
+  const guard = new THREE.Group();
+  guard.position.set(x, 0, z);
+
+  const uniform = makeMaterial(0x354f43);
+  const skin = makeMaterial(0xb77d59);
+  const dark = makeMaterial(0x202a2b);
+
+  addMesh(
+    guard,
+    new THREE.CapsuleGeometry(0.25, 0.42, 3, 8),
+    uniform,
+    [0, 1.15, 0]
   );
 
-  mesh.position.set(x, isBoost ? 1.3 : 1.15, z);
-  mesh.rotation.y = Math.PI / 2;
-  mesh.castShadow = true;
+  addMesh(
+    guard,
+    new THREE.SphereGeometry(0.19, 12, 10),
+    skin,
+    [0, 1.72, 0]
+  );
 
-  scene.add(mesh);
-  pickups.push({ mesh, taken: false, type });
-}
+  // Cap
+  addMesh(
+    guard,
+    new THREE.CylinderGeometry(0.21, 0.21, 0.1, 12),
+    dark,
+    [0, 1.91, 0]
+  );
 
-function makeObstacle(z) {
-  const laneIndex = Math.floor(Math.random() * 3);
-  const type = ['barrier', 'block', 'coin-line'][
-    Math.floor(Math.random() * 3)
-  ];
-  const x = (laneIndex - 1) * LANE_WIDTH;
+  addBox(
+    guard,
+    [0, 1.32, 0.25],
+    [0.1, 0.16, 0.035],
+    materials.gold
+  );
 
-  if (type === 'coin-line') {
-    for (let i = 0; i < 4; i++) {
-      makeCoin(x, z - i * 1.35);
-    }
+  for (const side of [-1, 1]) {
+    addMesh(
+      guard,
+      new THREE.CapsuleGeometry(0.065, 0.28, 3, 6),
+      uniform,
+      [side * 0.3, 1.1, 0]
+    );
 
-    if (Math.random() < 0.3) {
-      const boostLane = Math.floor(Math.random() * 3);
-      makeCoin((boostLane - 1) * LANE_WIDTH, z - 7, 'boost');
-    }
-
-    return;
+    addMesh(
+      guard,
+      new THREE.CapsuleGeometry(0.085, 0.32, 3, 6),
+      dark,
+      [side * 0.13, 0.43, 0]
+    );
   }
 
+  parent.add(guard);
+  return guard;
+}
+
+// ------------------------------------------------------------
+// OBSTACLES AND COLLECTIBLES
+// ------------------------------------------------------------
+
+function createBarrier(laneIndex, z) {
   const group = new THREE.Group();
+  group.position.set(LANES[laneIndex], 0, z);
 
-  if (type === 'barrier') {
-    addBox(group, 1.55, 0.65, 0.55, mat('#ff8b48'), 0, 0.65, 0);
-    addBox(group, 0.12, 1.1, 0.15, mat('#e8e9e4'), -0.6, 0.55, 0);
-    addBox(group, 0.12, 1.1, 0.15, mat('#e8e9e4'), 0.6, 0.55, 0);
-  } else {
-    addBox(group, 1.4, 1.55, 1.1, mat('#3c6579'), 0, 0.78, 0);
-    addBox(group, 1.48, 0.13, 1.18, mat('#8bb9c7'), 0, 1.45, 0);
+  addBox(group, [0, 0.65, 0], [1.9, 0.95, 0.42], materials.red);
+
+  for (let x = -0.6; x <= 0.61; x += 0.6) {
+    addBox(
+      group,
+      [x, 0.65, 0.225],
+      [0.3, 0.94, 0.03],
+      materials.barrierWhite,
+      { rotation: [0, 0, -0.3] }
+    );
   }
 
-  group.position.set(x, 0, z);
+  addBox(group, [-0.65, 0.15, 0], [0.12, 0.3, 0.55], materials.black);
+  addBox(group, [0.65, 0.15, 0], [0.12, 0.3, 0.55], materials.black);
+
   scene.add(group);
-  obstacles.push({ mesh: group, laneIndex, type, hit: false });
+
+  const item = {
+    group,
+    lane: laneIndex,
+    z,
+    type: 'barrier',
+    passed: false
+  };
+
+  obstacles.push(item);
+  return item;
 }
 
-function populateRace() {
-  clearRaceObjects();
+function createCrate(laneIndex, z) {
+  const group = new THREE.Group();
+  group.position.set(LANES[laneIndex], 0, z);
 
-  for (let i = 0; i < 25; i++) {
-    makeObstacle(-40 - i * 9);
-  }
+  const crateMaterial = makeMaterial(0x98653a);
+  addBox(group, [0, 0.7, 0], [1.35, 1.4, 1.05], crateMaterial);
+  addBox(group, [0, 0.7, 0.54], [1.15, 0.12, 0.05], materials.gold);
+  addBox(group, [0, 0.7, -0.54], [1.15, 0.12, 0.05], materials.gold);
+
+  scene.add(group);
+
+  const item = {
+    group,
+    lane: laneIndex,
+    z,
+    type: 'crate',
+    passed: false
+  };
+
+  obstacles.push(item);
+  return item;
 }
 
-// ============================================================
-// INPUT: KEYBOARD + MOBILE SWIPES
-// ============================================================
+function createCoin(laneIndex, z, y = 1.25) {
+  const group = new THREE.Group();
+  group.position.set(LANES[laneIndex], y, z);
 
-function moveLane(amount) {
-  if (!running || paused) return;
-  lane = Math.max(0, Math.min(2, lane + amount));
-}
+  const coin = addMesh(
+    group,
+    new THREE.TorusGeometry(0.34, 0.105, 8, 18),
+    materials.gold,
+    [0, 0, 0]
+  );
 
-function jump() {
-  if (running && !paused && performance.now() >= jumpUntil) {
-    slideUntil = 0;
-    jumpUntil = performance.now() + 650;
-  }
-}
+  coin.rotation.y = Math.PI / 2;
+  scene.add(group);
 
-function slide() {
-  if (running && !paused && performance.now() >= slideUntil) {
-    jumpUntil = 0;
-    slideUntil = performance.now() + 600;
-  }
-}
-
-window.addEventListener('keydown', (event) => {
-  const key = event.key.toLowerCase();
-
-  if ([
-    'arrowleft',
-    'arrowright',
-    'arrowdown',
-    'arrowup',
-    ' '
-  ].includes(key)) {
-    event.preventDefault();
-  }
-
-  if (event.repeat) return;
-
-  if (key === 'arrowleft' || key === 'a') moveLane(-1);
-  if (key === 'arrowright' || key === 'd') moveLane(1);
-  if (key === 'arrowup' || key === 'w' || key === ' ') jump();
-  if (key === 'arrowdown' || key === 's') slide();
-  if (key === 'escape' && running) togglePause();
-});
-
-// Touch gestures are handled on the actual game canvas.
-const swipeSurface = renderer.domElement;
-swipeSurface.style.touchAction = 'none';
-
-let swipeStartX = 0;
-let swipeStartY = 0;
-let swipePointerId = null;
-const SWIPE_THRESHOLD = 35;
-
-swipeSurface.addEventListener('pointerdown', (event) => {
-  if (event.pointerType === 'mouse' && event.button !== 0) return;
-  if (!running || paused) return;
-
-  swipeStartX = event.clientX;
-  swipeStartY = event.clientY;
-  swipePointerId = event.pointerId;
-
-  try {
-    swipeSurface.setPointerCapture(event.pointerId);
-  } catch {
-    // Pointer capture may not be available in every browser.
-  }
-});
-
-swipeSurface.addEventListener('pointerup', (event) => {
-  if (swipePointerId !== event.pointerId) return;
-
-  const dx = event.clientX - swipeStartX;
-  const dy = event.clientY - swipeStartY;
-  swipePointerId = null;
-
-  const absX = Math.abs(dx);
-  const absY = Math.abs(dy);
-
-  if (Math.max(absX, absY) < SWIPE_THRESHOLD || !running || paused) {
-    return;
-  }
-
-  if (absX > absY) {
-    moveLane(dx < 0 ? -1 : 1);
-  } else if (dy < 0) {
-    jump();
-  } else {
-    slide();
-  }
-});
-
-swipeSurface.addEventListener('pointercancel', () => {
-  swipePointerId = null;
-});
-
-swipeSurface.addEventListener('contextmenu', (event) => {
-  event.preventDefault();
-});
-
-function bindControl(id, action) {
-  $(id)?.addEventListener('pointerdown', (event) => {
-    event.preventDefault();
-    action();
+  coins.push({
+    group,
+    coin,
+    lane: laneIndex,
+    z,
+    collected: false
   });
 }
 
-bindControl('left-control', () => moveLane(-1));
-bindControl('right-control', () => moveLane(1));
-bindControl('jump-control', jump);
-bindControl('slide-control', slide);
+function spawnObstacleWave() {
+  const first = Math.floor(Math.random() * 3);
+  const pattern = Math.random();
 
-// ============================================================
-// RESET AND COUNTDOWN
-// ============================================================
+  if (pattern < 0.28) {
+    createBarrier(first, -105);
+    createCoin((first + 1) % 3, -104, 1.2);
+  } else if (pattern < 0.55) {
+    createCrate(first, -105);
+    createCoin((first + 2) % 3, -104, 1.2);
+  } else if (pattern < 0.77) {
+    const second = (first + 1) % 3;
+    createBarrier(first, -105);
+    createBarrier(second, -105);
+    createCoin((first + 2) % 3, -104, 1.2);
+  } else {
+    for (let i = 0; i < 6; i++) {
+      createCoin(first, -105 - i * 2.6, 1.2 + Math.sin(i * 0.6) * 0.2);
+    }
+    createBarrier((first + 1) % 3, -119);
+  }
+}
+
+// ------------------------------------------------------------
+// GAME FLOW
+// ------------------------------------------------------------
 
 function resetRace() {
   running = false;
   paused = false;
   raceStarted = false;
+  raceFinished = false;
 
-  distance = 0;
-  coins = 0;
-  speed = START_SPEED;
-  lane = 1;
-  hits = 0;
-  scoreMultiplier = 1;
-
-  boostUntil = 0;
-  jumpUntil = 0;
+  lane = START_LANE;
+  jumpVelocity = 0;
+  isJumping = false;
+  isSliding = false;
   slideUntil = 0;
+  speed = START_SPEED;
+  distance = 0;
+  coinCount = 0;
+  elapsed = 0;
+  spawnTimer = 0;
+  coinTimer = 0;
+  hitCount = 0;
+  invulnerableUntil = 0;
+  shakeUntil = 0;
 
-  clearRaceObjects();
+  for (const item of obstacles) { scene.remove(item.group); disposeObject(item.group); }
+  for (const item of coins) { scene.remove(item.group); disposeObject(item.group); }
 
-  for (const runner of remoteRunners.values()) {
-    scene.remove(runner);
+  obstacles = [];
+  coins = [];
+
+  for (const group of world) { scene.remove(group); disposeObject(group); }
+  world = [];
+
+  for (const item of decorations) { scene.remove(item); disposeObject(item); }
+  decorations = [];
+
+  createWorld();
+
+  if (player) {
+    player.position.set(LANES[START_LANE], 0, PLAYER_START_Z);
+    player.rotation.set(0, Math.PI, 0);
+    player.visible = true;
   }
-  remoteRunners.clear();
 
-  universityGate.position.set(3.9, 0, -30);
-  universityGate.visible = true;
+  if (remotePlayer) {
+    scene.remove(remotePlayer);
+    remotePlayer = null;
+  }
 
-  campusSegments.forEach((segment, i) => {
-    segment.position.z = -45 - i * CAMPUS_GAP;
-  });
+  // Back to the pulled-back view of the gate entrance
+  introBlend = 1;
+  if (camera) {
+    camera.position.set(LANES[START_LANE], 4.4 + INTRO_UP, 9.5 + INTRO_BACK);
+    camera.lookAt(GATE_OFFSET_X * 0.8, 2.1, -7);
+  }
 
-  roadSegments.forEach((segment, i) => {
-    segment.position.z = -10 - i * ROAD_LENGTH;
-  });
-
-  player.position.set(0, 0, 2);
-  player.rotation.set(0, 0, 0);
-  player.scale.set(1, 1, 1);
-  player.visible = true;
-
-  $('distance-value').textContent = '0';
-  $('coins-value').textContent = '0';
-  $('hud').classList.remove('hidden');
-  $('mobile-controls').classList.remove('hidden');
+  updateHUD();
 }
 
-function startCountdown(callback) {
-  clearTimeout(countdownTimer);
-  hideScreens();
+function beginSolo() {
+  gameMode = 'solo';
+  roomCode = '';
+  resetRace();
+  startCountdown();
+}
 
-  $('hud').classList.remove('hidden');
-  $('countdown-screen').classList.remove('hidden');
+function startCountdown() {
+  showScreen('game');
+  ui.countdown?.classList.remove('hidden');
 
-  let number = 3;
-  $('countdown-number').textContent = number;
+  let count = 3;
+  if (ui.countdownNumber) ui.countdownNumber.textContent = String(count);
 
-  function tick() {
-    number--;
+  const tick = () => {
+    if (paused || raceFinished) return;
 
-    if (number > 0) {
-      $('countdown-number').textContent = number;
-      countdownTimer = setTimeout(tick, 700);
-    } else {
-      $('countdown-number').textContent = 'GO!';
+    if (count <= 0) {
+      ui.countdown?.classList.add('hidden');
+      running = true;
+      raceStarted = true;
+      clock.getDelta();
+      showToast('GO! Collect coins and avoid obstacles.');
+      return;
+    }
 
-      countdownTimer = setTimeout(() => {
-        $('countdown-screen').classList.add('hidden');
-        callback();
-      }, 450);
+    if (ui.countdownNumber) {
+      ui.countdownNumber.textContent = String(count);
+    }
+
+    count--;
+    window.setTimeout(tick, 750);
+  };
+
+  window.setTimeout(tick, 250);
+}
+
+function beginMultiplayerRace() {
+  resetRace();
+  startCountdown();
+}
+
+function finishRace() {
+  if (raceFinished) return;
+
+  running = false;
+  raceFinished = true;
+  if (player) player.visible = true;
+
+  if (gameMode === 'multi' && socket.connected && roomCode) {
+    socket.emit('race:finished', {
+      roomCode,
+      distance: Math.floor(distance),
+      coins: coinCount
+    });
+  }
+
+  ui.finalDistance && (ui.finalDistance.textContent = String(Math.floor(distance)));
+  ui.finalCoins && (ui.finalCoins.textContent = String(coinCount));
+
+  ui.hud?.classList.add('hidden');
+  ui.mobile?.classList.add('hidden');
+  ui.over?.classList.remove('hidden');
+}
+
+function pauseGame() {
+  if (!running || paused) return;
+
+  paused = true;
+  running = false;
+  ui.pause?.classList.remove('hidden');
+}
+
+function resumeGame() {
+  if (!paused || raceFinished) return;
+
+  paused = false;
+  running = true;
+  ui.pause?.classList.add('hidden');
+  clock.getDelta();
+}
+
+function quitRun() {
+  running = false;
+  paused = false;
+  raceStarted = false;
+
+  ui.pause?.classList.add('hidden');
+  ui.countdown?.classList.add('hidden');
+  ui.hud?.classList.add('hidden');
+  ui.over?.classList.add('hidden');
+  ui.mobile?.classList.add('hidden');
+
+  if (gameMode === 'multi' && roomCode) {
+    socket.emit('room:leave');
+  }
+
+  roomCode = '';
+  isHost = false;
+
+  // Rebuild the start scene so the menu shows the gate entrance again
+  resetRace();
+  showScreen('home');
+}
+
+function updateHUD() {
+  if (ui.distance) ui.distance.textContent = String(Math.floor(distance));
+  if (ui.coins) ui.coins.textContent = String(coinCount);
+}
+
+// ------------------------------------------------------------
+// MOVEMENT AND COLLISIONS
+// ------------------------------------------------------------
+
+function moveLane(direction) {
+  if (!running || paused || raceFinished) return;
+
+  lane = THREE.MathUtils.clamp(lane + direction, 0, 2);
+}
+
+function jump() {
+  if (!running || paused || isJumping || raceFinished) return;
+
+  isJumping = true;
+  jumpVelocity = 9.2;
+}
+
+function slide() {
+  if (!running || paused || raceFinished) return;
+
+  isSliding = true;
+  slideUntil = performance.now() + 680;
+}
+
+function updatePlayer(delta, time) {
+  if (!player) return;
+
+  const targetX = LANES[lane];
+  player.position.x = THREE.MathUtils.damp(
+    player.position.x,
+    targetX,
+    13,
+    delta
+  );
+
+  // Lean into lane changes
+  player.rotation.z = THREE.MathUtils.damp(
+    player.rotation.z,
+    (targetX - player.position.x) * 0.09,
+    10,
+    delta
+  );
+
+  if (isJumping) {
+    player.position.y += jumpVelocity * delta;
+    jumpVelocity -= GRAVITY * delta;
+
+    if (player.position.y <= 0) {
+      player.position.y = 0;
+      isJumping = false;
+      jumpVelocity = 0;
     }
   }
 
-  countdownTimer = setTimeout(tick, 700);
-}
-
-function startSolo() {
-  mode = 'solo';
-  roomCode = '';
-
-  resetRace();
-  populateRace();
-
-  startCountdown(() => {
-    running = true;
-    raceStarted = true;
-    lastTime = performance.now();
-    showToast('Swipe to move, jump, or slide. Good luck!');
-  });
-}
-
-$('solo-button').addEventListener('click', startSolo);
-
-// ============================================================
-// MULTIPLAYER ROOMS
-// ============================================================
-
-$('multiplayer-button').addEventListener('click', () => {
-  if (!socket.connected) socket.connect();
-
-  $('room-error').textContent = '';
-  $('room-lobby').classList.add('hidden');
-  showScreen('room-screen');
-});
-
-$('back-home-button').addEventListener('click', () => {
-  socket.emit('room:leave');
-  roomCode = '';
-  showScreen('home-screen');
-});
-
-$('create-room-button').addEventListener('click', () => {
-  if (!socket.connected) socket.connect();
-
-  $('room-error').textContent = '';
-  socket.emit('room:create', { character, name: playerName });
-});
-
-$('join-room-form').addEventListener('submit', (event) => {
-  event.preventDefault();
-
-  const code = $('room-code').value.trim().toUpperCase();
-
-  if (!/^[A-HJ-NP-Z2-9]{5}$/.test(code)) {
-    $('room-error').textContent =
-      'Enter a valid five-character room code.';
-    return;
+  if (isSliding && performance.now() >= slideUntil) {
+    isSliding = false;
   }
 
-  if (!socket.connected) socket.connect();
+  // Blink while invulnerable after a hit
+  const now = performance.now();
+  player.visible = now >= invulnerableUntil || Math.floor(now / 90) % 2 === 0;
 
-  $('room-error').textContent = '';
-  socket.emit('room:join', {
-    roomCode: code,
-    character,
-    name: playerName
+  animateRunner(player, time, true);
+}
+
+function updateWorld(delta) {
+  const movement = speed * delta;
+
+  for (let i = 0; i < world.length; i++) {
+    const segment = world[i];
+    segment.position.z += movement;
+
+    if (segment.position.z > SEGMENT_WRAP_Z) {
+      const newZ = segment.position.z - SEGMENT_LENGTH * SEGMENT_COUNT;
+
+      if (segment.userData.plaza) {
+        // The outside-the-gate plaza turns into a normal campus segment
+        // when it recycles to the far end of the road.
+        scene.remove(segment);
+        disposeObject(segment);
+        world[i] = createCampusSegment(newZ);
+      } else {
+        segment.position.z = newZ;
+      }
+    }
+  }
+
+  // Move the gate and the SUIIT building with the scrolling world.
+  // Remove them permanently once they are far behind the camera.
+  for (const item of [...decorations]) {
+    if (!item.userData?.isGate && !item.userData?.isBuilding) continue;
+
+    item.position.z += movement;
+
+    const removeZ = item.userData.isBuilding ? 90 : 60;
+
+    if (item.position.z > removeZ) {
+      scene.remove(item);
+      disposeObject(item);
+
+      const index = decorations.indexOf(item);
+      if (index !== -1) decorations.splice(index, 1);
+    }
+  }
+
+  for (const obstacle of obstacles) {
+    obstacle.z += movement;
+    obstacle.group.position.z = obstacle.z;
+  }
+
+  for (const item of coins) {
+    item.z += movement;
+    item.group.position.z = item.z;
+    item.coin.rotation.y += delta * 4.5;
+    item.group.rotation.y = Math.sin(elapsed * 3 + item.z) * 0.16;
+  }
+
+  obstacles = obstacles.filter((item) => {
+    if (item.z > 15) {
+      scene.remove(item.group);
+      disposeObject(item.group);
+      return false;
+    }
+    return true;
   });
-});
 
-function renderRoom(state) {
-  if (!state || state.roomCode !== roomCode) return;
+  coins = coins.filter((item) => {
+    if (item.z > 15 || item.collected) {
+      scene.remove(item.group);
+      disposeObject(item.group);
+      return false;
+    }
+    return true;
+  });
+}
+
+function checkCollisions() {
+  if (!player || performance.now() < invulnerableUntil) return;
+
+  for (const obstacle of obstacles) {
+    if (obstacle.passed) continue;
+
+    if (Math.abs(obstacle.z - player.position.z) > 1.2) continue;
+    if (Math.abs(player.position.x - LANES[obstacle.lane]) > 1.2) continue;
+
+    // Barriers can be jumped; crates can be jumped over too.
+    if (isJumping && player.position.y > 1.25) {
+      obstacle.passed = true;
+      continue;
+    }
+
+    // Sliding under a barrier only works if its bar is high enough.
+    if (isSliding && obstacle.type === 'barrier') {
+      obstacle.passed = true;
+      continue;
+    }
+
+    obstacle.passed = true;
+    hitCount++;
+    invulnerableUntil = performance.now() + 1100;
+    shakeUntil = performance.now() + 350;
+    speed = Math.max(START_SPEED * 0.72, speed - 2.5);
+
+    showToast(hitCount >= 3
+      ? 'Too many collisions! Run over.'
+      : 'Collision! Watch the road.');
+
+    if (hitCount >= 3) finishRace();
+    break;
+  }
+
+  for (const item of coins) {
+    if (item.collected) continue;
+
+    const nearZ = Math.abs(item.z - player.position.z) < 1.5;
+    const nearX = Math.abs(player.position.x - LANES[item.lane]) < 1.15;
+    const nearY = Math.abs(player.position.y + 1.0 - item.group.position.y) < 1.8;
+
+    if (nearZ && nearX && nearY) {
+      item.collected = true;
+      coinCount++;
+      updateHUD();
+    }
+  }
+}
+
+// ------------------------------------------------------------
+// CAMERA AND GAME LOOP
+// ------------------------------------------------------------
+
+function updateCamera(delta) {
+  if (!player) return;
+
+  // Before "GO" the camera sits outside the gate showing the whole entrance.
+  // At GO it swoops forward, drives through the open entrance arch and
+  // settles behind the runner.
+  introBlend = THREE.MathUtils.damp(introBlend, raceStarted ? 0 : 1, 2.6, delta);
+
+  // During the swoop the camera stays lined up with the runner's lane so it
+  // flies through the same entrance arch, then eases back to the normal follow.
+  const follow = 0.22 + 0.78 * Math.min(1, introBlend * 4);
+
+  const target = new THREE.Vector3(
+    player.position.x * follow,
+    4.4 + player.position.y * 0.12 + introBlend * INTRO_UP,
+    9.5 + introBlend * INTRO_BACK
+  );
+
+  camera.position.lerp(target, 1 - Math.exp(-delta * 3.2));
+
+  // Subtle motion while running
+  if (running) {
+    camera.position.y += Math.sin(performance.now() * 0.014) * 0.025;
+  }
+
+  // Shake after a collision
+  const now = performance.now();
+  if (now < shakeUntil) {
+    const k = (shakeUntil - now) / 350;
+    camera.position.x += (Math.random() - 0.5) * 0.35 * k;
+    camera.position.y += (Math.random() - 0.5) * 0.35 * k;
+  }
+
+  // Field of view widens with speed
+  const baseFov = window.innerWidth < 700 ? 68 : 62;
+  const targetFov = baseFov + (running ? (speed - START_SPEED) * 0.6 : 0);
+  camera.fov = THREE.MathUtils.damp(camera.fov, targetFov, 4, delta);
+  camera.updateProjectionMatrix();
+
+  // At the start, look toward the middle of the gate so the whole gate is framed.
+  const lookX = THREE.MathUtils.lerp(
+    player.position.x * 0.25,
+    GATE_OFFSET_X * 0.8,
+    introBlend
+  );
+
+  camera.lookAt(
+    lookX,
+    1.1 + player.position.y * 0.22 + introBlend * 1.0,
+    -7
+  );
+
+  // Keep the sky dome centred on the camera
+  if (skyMesh) skyMesh.position.copy(camera.position);
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  const delta = Math.min(clock.getDelta(), 0.04);
+  const time = performance.now() / 1000;
+
+  if (running && !paused && raceStarted && !raceFinished) {
+    elapsed += delta;
+    distance += speed * delta * 1.7;
+    speed = Math.min(27, START_SPEED + distance * 0.0024);
+
+    updatePlayer(delta, time);
+    updateWorld(delta);
+    updateDust(delta);
+    checkCollisions();
+
+    spawnTimer += delta;
+    if (spawnTimer > Math.max(0.9, 1.8 - distance * 0.0005)) {
+      spawnTimer = 0;
+      spawnObstacleWave();
+    }
+
+    coinTimer += delta;
+    if (coinTimer > 4.8) {
+      coinTimer = 0;
+      createCoin(Math.floor(Math.random() * 3), -105, random(1.1, 1.8));
+    }
+
+    updateCamera(delta);
+    updateHUD();
+
+    if (gameMode === 'multi' && socket.connected && roomCode) {
+      if (performance.now() - lastNetworkUpdate > 100) {
+        lastNetworkUpdate = performance.now();
+
+        socket.emit('player:update', {
+          roomCode,
+          lane,
+          distance: Math.floor(distance),
+          coins: coinCount,
+          character: selectedCharacter
+        });
+      }
+    }
+
+    if (distance >= MAX_DISTANCE) finishRace();
+  } else {
+    if (player && !isJumping) {
+      animateRunner(player, time, false);
+    }
+    updateCamera(delta);
+  }
+
+  if (remotePlayer) {
+    animateRunner(remotePlayer, time, true);
+  }
+
+  // Flickering flame on the gate monument
+  if (gateFlame) {
+    gateFlame.scale.set(
+      1 + Math.sin(time * 11) * 0.06,
+      1 + Math.sin(time * 7.3) * 0.12,
+      1 + Math.sin(time * 9) * 0.06
+    );
+  }
+
+  hideToast();
+
+  if (renderer && scene && camera) {
+    renderer.render(scene, camera);
+  }
+}
+
+// ------------------------------------------------------------
+// MULTIPLAYER
+// ------------------------------------------------------------
+
+function openRoomScreen() {
+  gameMode = 'multi';
+  roomCode = '';
+  isHost = false;
+
+  ui.roomError && (ui.roomError.textContent = '');
+  ui.roomLobby?.classList.add('hidden');
+
+  showScreen('room');
+
+  if (!socket.connected) {
+    setConnection('Connecting...');
+    socket.connect();
+  }
+}
+
+function renderRoomState(state) {
+  if (!state || !state.players) return;
+
+  if (state.roomCode) {
+    roomCode = state.roomCode;
+  }
+
+  if (ui.roomCodeDisplay) {
+    ui.roomCodeDisplay.textContent = roomCode || '-----';
+  }
+
+  ui.roomLobby?.classList.remove('hidden');
+
+  if (ui.playerList) {
+    ui.playerList.replaceChildren();
+
+    for (const person of state.players) {
+      const li = document.createElement('li');
+      li.textContent = `${person.name}${person.id === state.hostId ? ' (Host)' : ''}`;
+      ui.playerList.appendChild(li);
+    }
+  }
 
   isHost = state.hostId === socket.id;
 
-  $('room-code-display').textContent = state.roomCode;
-  $('room-lobby').classList.remove('hidden');
-
-  const list = $('player-list');
-  list.replaceChildren();
-
-  for (const p of state.players) {
-    const row = document.createElement('div');
-    row.className = 'player-row';
-
-    const label = document.createElement('span');
-    label.textContent = p.id === socket.id
-      ? `${playerName} (You)`
-      : (p.name || p.character || 'Runner');
-
-    const status = document.createElement('small');
-    status.textContent = p.id === state.hostId ? 'HOST' : 'RUNNER';
-
-    row.append(label, status);
-    list.appendChild(row);
+  if (ui.startRace) {
+    ui.startRace.disabled = !isHost || state.players.length !== 2 || state.started;
+    ui.startRace.textContent = state.started ? 'RACE STARTED' : 'START RACE';
   }
 
-  const canStart =
-    isHost && state.players.length === 2 && !state.started;
-
-  $('start-race-button').classList.toggle('hidden', !canStart);
-
-  $('lobby-message').textContent = state.players.length < 2
-    ? 'Waiting for another runner to join...'
-    : isHost
-      ? 'Both runners are connected. Start the race!'
-      : 'Waiting for the host to start the race.';
+  if (ui.lobbyMessage) {
+    ui.lobbyMessage.textContent = state.players.length < 2
+      ? 'Share the room code with a friend. Waiting for player 2...'
+      : 'Two runners are ready. The host can start the race!';
+  }
 }
 
-$('copy-room-code-button').addEventListener('click', async () => {
-  try {
-    await navigator.clipboard.writeText(roomCode);
-    showToast('Room code copied.');
-  } catch {
-    showToast(`Room code: ${roomCode}`);
+function showRoomError(message) {
+  if (ui.roomError) ui.roomError.textContent = message || 'Something went wrong.';
+}
+
+function syncRemotePlayers(players) {
+  if (!Array.isArray(players)) return;
+
+  const other = players.find((p) => p.id !== socket.id);
+
+  if (!other) {
+    if (remotePlayer) scene.remove(remotePlayer);
+    remotePlayer = null;
+    return;
   }
-});
 
-$('start-race-button').addEventListener('click', () => {
-  if (!roomCode || !isHost) return;
-  socket.emit('race:start', { roomCode, character });
-});
+  if (!remotePlayer || remotePlayer.userData.characterName !== other.character) {
+    if (remotePlayer) scene.remove(remotePlayer);
 
-// ============================================================
-// SOCKET EVENTS
-// ============================================================
+    remotePlayer = createCharacter(
+      other.character,
+      other.character === 'Swastik' ? COLORS.orange : COLORS.blue
+    );
+
+    remotePlayer.scale.setScalar(0.92);
+    scene.add(remotePlayer);
+  }
+
+  remotePlayer.position.x = LANES[THREE.MathUtils.clamp(other.lane, 0, 2)];
+  remotePlayer.position.z = -1.5;
+  remotePlayer.position.y = 0;
+}
 
 socket.on('connect', () => {
-  $('connection-status').textContent = 'ONLINE';
-  $('connection-status').classList.add('online');
+  setConnection('Online');
 });
 
 socket.on('disconnect', () => {
-  $('connection-status').textContent = 'OFFLINE';
-  $('connection-status').classList.remove('online');
+  setConnection('Offline mode');
+
+  if (gameMode === 'multi' && roomCode && !raceFinished) {
+    showToast('Connection lost. Multiplayer may be interrupted.');
+  }
 });
 
 socket.on('connect_error', () => {
-  $('room-error').textContent =
-    'Cannot connect to the game server. Try again.';
+  setConnection('Offline mode');
 });
 
 socket.on('room:created', (data) => {
   roomCode = data.roomCode;
   isHost = true;
-  showToast('Room created. Share the code with your friend.');
+
+  if (ui.roomCodeDisplay) ui.roomCodeDisplay.textContent = roomCode;
+  ui.roomLobby?.classList.remove('hidden');
+  showRoomError('');
 });
 
 socket.on('room:joined', (data) => {
   roomCode = data.roomCode;
   isHost = false;
-  showToast('Joined room successfully.');
+
+  if (ui.roomCodeDisplay) ui.roomCodeDisplay.textContent = roomCode;
+  ui.roomLobby?.classList.remove('hidden');
+  showRoomError('');
 });
 
-socket.on('room:state', renderRoom);
+socket.on('room:state', (state) => {
+  if (state.roomCode && roomCode && state.roomCode !== roomCode) return;
+  renderRoomState(state);
+});
 
 socket.on('room:error', (data) => {
-  $('room-error').textContent =
-    data.message || 'Unable to join this room.';
+  showRoomError(data?.message || 'Multiplayer error.');
 });
 
 socket.on('room:player-left', () => {
   showToast('The other player left the room.');
 });
 
-socket.on('race:started', (data) => {
-  if (data.roomCode !== roomCode || raceStarted) return;
+socket.on('race:started', () => {
+  gameMode = 'multi';
+  beginMultiplayerRace();
+});
 
-  mode = 'multi';
-  resetRace();
-  raceStarted = true;
-  populateRace();
+socket.on('race:state', (state) => {
+  syncRemotePlayers(state?.players);
+});
 
-  startCountdown(() => {
-    running = true;
-    raceStarted = true;
-    lastTime = performance.now();
+// ------------------------------------------------------------
+// UI EVENT HANDLERS
+// ------------------------------------------------------------
+
+ui.loginForm?.addEventListener('submit', (event) => {
+  event.preventDefault();
+
+  const name = ui.playerName?.value?.trim() || '';
+
+  if (name.length < 2 || name.length > 18) {
+    if (ui.loginError) {
+      ui.loginError.textContent = 'Please enter a name between 2 and 18 characters.';
+    }
+    return;
+  }
+
+  if (!/^[\p{L}\p{N} _.-]+$/u.test(name)) {
+    if (ui.loginError) {
+      ui.loginError.textContent = 'Use letters, numbers, spaces, dots or hyphens.';
+    }
+    return;
+  }
+
+  playerName = name;
+  if (ui.welcomeName) ui.welcomeName.textContent = playerName;
+
+  if (ui.loginError) ui.loginError.textContent = '';
+  showScreen('home');
+});
+
+document.querySelectorAll('.character-option').forEach((button) => {
+  button.addEventListener('click', () => {
+    selectedCharacter = button.dataset.character === 'Swastik'
+      ? 'Swastik'
+      : 'Smruti';
+
+    document.querySelectorAll('.character-option').forEach((option) => {
+      option.classList.toggle('selected', option === button);
+    });
+
+    replacePlayerCharacter();
   });
 });
 
-socket.on('race:state', (data) => {
-  if (mode !== 'multi' || !data?.players) return;
+ui.solo?.addEventListener('click', beginSolo);
+ui.multiplayer?.addEventListener('click', openRoomScreen);
 
-  for (const p of data.players) {
-    if (p.id === socket.id) continue;
-
-    let runner = remoteRunners.get(p.id);
-
-    if (!runner) {
-      runner = makeRunner(p.character || 'Swastik', '#9376ff');
-      remoteRunners.set(p.id, runner);
-    }
-
-    const targetX = ((Number(p.lane) || 1) - 1) * LANE_WIDTH;
-    runner.position.x += (targetX - runner.position.x) * 0.35;
-    runner.position.z = -1.2;
-
-    const swing = running
-      ? Math.sin(performance.now() * 0.014) * 0.6
-      : 0;
-
-    runner.userData.leftLeg.rotation.x = swing;
-    runner.userData.rightLeg.rotation.x = -swing;
-    runner.userData.leftArm.rotation.x = -swing * 0.8;
-    runner.userData.rightArm.rotation.x = swing * 0.8;
-  }
-});
-
-// ============================================================
-// PAUSE AND GAME OVER
-// ============================================================
-
-function togglePause() {
-  if (!running) return;
-
-  paused = !paused;
-
-  if (paused) {
-    showScreen('pause-screen');
-  } else {
-    hideScreens();
-    $('hud').classList.remove('hidden');
-    lastTime = performance.now();
-  }
-}
-
-$('pause-button').addEventListener('click', togglePause);
-$('resume-button').addEventListener('click', togglePause);
-
-function finishRace(reason = 'Nice Run') {
-  if (!running && !raceStarted) return;
-
-  running = false;
-  paused = false;
-  raceStarted = false;
-  player.visible = false;
-
-  $('hud').classList.add('hidden');
-  $('mobile-controls').classList.add('hidden');
-
-  const finalScore = Math.floor(distance) + coins * 50;
-
-  $('final-distance').textContent = `${Math.floor(distance)} m`;
-  $('final-coins').textContent = String(coins);
-
-  if ($('final-score')) {
-    $('final-score').textContent = String(finalScore);
-  }
-
-  if ($('game-over-reason')) {
-    $('game-over-reason').textContent = reason;
-  }
-
-  if (mode === 'multi' && roomCode) {
-    socket.emit('race:finished', {
-      roomCode,
-      distance: Math.floor(distance),
-      coins,
-      score: finalScore
-    });
-  }
-
-  showScreen('over-screen');
-}
-
-$('quit-button').addEventListener('click', () => {
-  running = false;
-  paused = false;
-  raceStarted = false;
-
-  socket.emit('room:leave');
+ui.backHome?.addEventListener('click', () => {
+  if (roomCode) socket.emit('room:leave');
   roomCode = '';
-
-  $('hud').classList.add('hidden');
-  $('mobile-controls').classList.add('hidden');
-  player.visible = false;
-
-  showScreen('home-screen');
+  showScreen('home');
 });
 
-$('menu-button').addEventListener('click', () => {
+ui.changeName?.addEventListener('click', () => {
   running = false;
   paused = false;
-  raceStarted = false;
-
-  $('hud').classList.add('hidden');
-  $('mobile-controls').classList.add('hidden');
-  player.visible = false;
-
-  showScreen('home-screen');
+  showScreen('login');
 });
 
-$('retry-button').addEventListener('click', () => {
-  if (mode === 'multi' && roomCode) {
-    showScreen('room-screen');
-    $('hud').classList.add('hidden');
-    $('mobile-controls').classList.add('hidden');
+ui.createRoom?.addEventListener('click', () => {
+  if (!socket.connected) socket.connect();
+
+  socket.emit('room:create', {
+    name: playerName,
+    character: selectedCharacter
+  });
+});
+
+ui.joinForm?.addEventListener('submit', (event) => {
+  event.preventDefault();
+
+  const code = ui.roomInput?.value?.trim().toUpperCase() || '';
+
+  if (code.length !== 5) {
+    showRoomError('Enter the five-character room code.');
+    return;
+  }
+
+  if (!socket.connected) socket.connect();
+
+  socket.emit('room:join', {
+    roomCode: code,
+    name: playerName,
+    character: selectedCharacter
+  });
+});
+
+ui.copyRoom?.addEventListener('click', async () => {
+  if (!roomCode) return;
+
+  try {
+    await navigator.clipboard.writeText(roomCode);
+    showToast('Room code copied!');
+  } catch {
+    showToast(`Room code: ${roomCode}`);
+  }
+});
+
+ui.startRace?.addEventListener('click', () => {
+  if (!roomCode || !isHost) {
+    showRoomError('Only the room host can start the race.');
+    return;
+  }
+
+  socket.emit('race:start', {
+    roomCode,
+    character: selectedCharacter
+  });
+});
+
+ui.pauseButton?.addEventListener('click', pauseGame);
+ui.resume?.addEventListener('click', resumeGame);
+ui.quit?.addEventListener('click', quitRun);
+
+ui.retry?.addEventListener('click', () => {
+  if (gameMode === 'multi') {
+    showToast('Return to the lobby to start another multiplayer race.');
+    quitRun();
   } else {
-    startSolo();
+    beginSolo();
   }
 });
 
-// ============================================================
-// MOVING WORLD
-// ============================================================
+ui.menu?.addEventListener('click', quitRun);
 
-function updateMovingRoad(delta) {
-  for (const segment of roadSegments) {
-    segment.position.z += speed * delta;
-
-    if (segment.position.z > 20) {
-      const farthestZ = Math.min(
-        ...roadSegments.map((s) => s.position.z)
-      );
-
-      segment.position.z = farthestZ - ROAD_LENGTH;
-    }
-  }
-}
-
-function updateMovingGate(delta) {
-  if (!universityGate.visible) return;
-
-  universityGate.position.z += speed * delta;
-
-  if (universityGate.position.z > 25) {
-    universityGate.visible = false;
-  }
-}
-
-function updateMovingCampus(delta) {
-  for (const segment of campusSegments) {
-    segment.position.z += speed * delta;
-
-    if (segment.position.z > 25) {
-      const farthestZ = Math.min(
-        ...campusSegments.map((s) => s.position.z)
-      );
-
-      segment.position.z = farthestZ - CAMPUS_GAP * 1.5;
-    }
-  }
-}
-
-// ============================================================
-// RUNNER ANIMATION
-// ============================================================
-
-function updateRunner(now, delta) {
-  const targetX = (lane - 1) * LANE_WIDTH;
-
-  player.position.x +=
-    (targetX - player.position.x) * Math.min(1, delta * 12);
-
-  const jumping = now < jumpUntil;
-  const sliding = now < slideUntil;
-
-  const jumpProgress = Math.max(
-    0,
-    Math.min(1, (jumpUntil - now) / 650)
-  );
-
-  player.position.y = jumping
-    ? Math.sin(jumpProgress * Math.PI) * 1.65
-    : 0;
-
-  player.scale.y = sliding ? 0.68 : 1;
-
-  const swing = running && !jumping && !sliding
-    ? Math.sin(now * 0.014) * 0.65
-    : 0;
-
-  player.userData.leftLeg.rotation.x = swing;
-  player.userData.rightLeg.rotation.x = -swing;
-  player.userData.leftArm.rotation.x = -swing * 0.8;
-  player.userData.rightArm.rotation.x = swing * 0.8;
-
-  player.rotation.z +=
-    (0 - player.rotation.z) * Math.min(1, delta * 5);
-
-  player.rotation.y = (player.position.x - targetX) * -0.06;
-}
-
-// ============================================================
-// COLLISIONS, COINS AND BOOSTS
-// ============================================================
-
-function updateObstacles(delta, now) {
-  for (const item of obstacles) {
-    const previousZ = item.mesh.position.z;
-    item.mesh.position.z += speed * delta;
-
-    const collisionFront = player.position.z + 0.8;
-    const collisionBack = player.position.z - 0.8;
-
-    const crossedRunner =
-      previousZ <= collisionFront &&
-      item.mesh.position.z >= collisionBack;
-
-    const inLane =
-      Math.abs(item.mesh.position.x - player.position.x) < 1.05;
-
-    if (!item.hit && crossedRunner && inLane) {
-      const jumping = now < jumpUntil;
-      const sliding = now < slideUntil;
-
-      const avoided =
-        (item.type === 'barrier' && jumping) ||
-        (item.type === 'block' && sliding);
-
-      if (!avoided) {
-        item.hit = true;
-        hits++;
-
-        if (hits >= MAX_HITS) {
-          showToast('Second collision! Game over.');
-          finishRace('You hit two obstacles!');
-          return;
-        }
-
-        speed = Math.max(13, speed - 1.5);
-        showToast('First hit! Avoid the next obstacle.');
-
-        player.rotation.z =
-          player.position.x < item.mesh.position.x ? 0.12 : -0.12;
-      }
-    }
+// Keyboard controls
+window.addEventListener('keydown', (event) => {
+  if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', ' '].includes(event.key)) {
+    event.preventDefault();
   }
 
-  for (let i = obstacles.length - 1; i >= 0; i--) {
-    if (obstacles[i].mesh.position.z > 12) {
-      scene.remove(obstacles[i].mesh);
-      obstacles.splice(i, 1);
-    }
+  if (heldKeys.has(event.key)) return;
+  heldKeys.add(event.key);
+
+  if (event.key === 'ArrowLeft' || event.key.toLowerCase() === 'a') {
+    moveLane(-1);
   }
 
-  for (const item of pickups) {
-    item.mesh.position.z += speed * delta;
-    item.mesh.rotation.z += delta * 2;
-    item.mesh.rotation.y += delta * 2;
-
-    if (
-      !item.taken &&
-      Math.abs(item.mesh.position.z - player.position.z) < 1.1 &&
-      Math.abs(item.mesh.position.x - player.position.x) < 1.1
-    ) {
-      item.taken = true;
-      item.mesh.visible = false;
-
-      if (item.type === 'boost') {
-        boostUntil = now + 2500;
-        scoreMultiplier = 2;
-        showToast('Speed boost! Double coin value temporarily.');
-      } else {
-        coins++;
-        showToast(`Coin collected! x${scoreMultiplier}`);
-      }
-    }
+  if (event.key === 'ArrowRight' || event.key.toLowerCase() === 'd') {
+    moveLane(1);
   }
 
-  for (let i = pickups.length - 1; i >= 0; i--) {
-    if (
-      pickups[i].mesh.position.z > 12 ||
-      pickups[i].taken
-    ) {
-      scene.remove(pickups[i].mesh);
-      pickups.splice(i, 1);
-    }
+  if (event.key === 'ArrowUp' || event.key === ' ' || event.key.toLowerCase() === 'w') {
+    jump();
   }
 
-  if (obstacles.length < 15) {
-    const farthestZ = Math.min(
-      -30,
-      ...obstacles.map((item) => item.mesh.position.z)
-    );
-
-    makeObstacle(farthestZ - 8 - Math.random() * 7);
-  }
-}
-
-// ============================================================
-// WORLD UPDATE
-// ============================================================
-
-function updateWorld(delta, now) {
-  const boosted = now < boostUntil;
-  scoreMultiplier = boosted ? 2 : 1;
-
-  const targetSpeed = boosted ? 23 : 25;
-  speed = Math.min(targetSpeed, speed + delta * 0.12);
-
-  distance += speed * delta;
-
-  $('distance-value').textContent = String(Math.floor(distance));
-  $('coins-value').textContent = String(coins);
-
-  updateMovingRoad(delta);
-  updateMovingGate(delta);
-  updateMovingCampus(delta);
-  updateObstacles(delta, now);
-
-  if (!running) return;
-
-  camera.position.x +=
-    (player.position.x * 0.25 - camera.position.x) * delta * 2;
-
-  camera.lookAt(player.position.x * 0.18, 1.2, -8);
-
-  if (mode === 'multi' && roomCode && now - lastSync > 150) {
-    lastSync = now;
-
-    socket.emit('player:update', {
-      roomCode,
-      character,
-      lane,
-      distance: Math.floor(distance),
-      coins
-    });
+  if (event.key === 'ArrowDown' || event.key.toLowerCase() === 's') {
+    slide();
   }
 
-  if (distance >= 1000) {
-    finishRace('You completed 1000 metres!');
+  if (event.key === 'Escape') {
+    if (paused) resumeGame();
+    else pauseGame();
   }
-}
-
-// ============================================================
-// RENDER LOOP AND RESIZE
-// ============================================================
-
-function animate(now = 0) {
-  requestAnimationFrame(animate);
-
-  const delta = lastTime
-    ? Math.min((now - lastTime) / 1000, 0.05)
-    : 0;
-
-  if (running && !paused) {
-    updateRunner(now, delta);
-    updateWorld(delta, now);
-  }
-
-  renderer.render(scene, camera);
-  lastTime = now;
-}
-
-window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.7));
 });
 
-window.addEventListener('beforeunload', () => {
-  socket.emit('room:leave');
+window.addEventListener('keyup', (event) => {
+  heldKeys.delete(event.key);
 });
 
-animate();
+// Mobile touch controls
+function bindHoldButton(button, action) {
+  if (!button) return;
+
+  button.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    action();
+  });
+
+  button.addEventListener('contextmenu', (event) => event.preventDefault());
+}
+
+bindHoldButton(ui.left, () => moveLane(-1));
+bindHoldButton(ui.right, () => moveLane(1));
+bindHoldButton(ui.jump, jump);
+bindHoldButton(ui.slide, slide);
+
+// Swipe controls
+// (touchstart is bound on window: the renderer doesn't exist yet at this point in the file)
+let touchStartX = 0;
+let touchStartY = 0;
+
+window.addEventListener('touchstart', (event) => {
+  const touch = event.changedTouches[0];
+  touchStartX = touch.clientX;
+  touchStartY = touch.clientY;
+}, { passive: true });
+
+window.addEventListener('touchend', (event) => {
+  if (currentScreen !== 'game' || !running) return;
+
+  const touch = event.changedTouches[0];
+  const dx = touch.clientX - touchStartX;
+  const dy = touch.clientY - touchStartY;
+
+  if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 35) {
+    moveLane(dx > 0 ? 1 : -1);
+  } else if (Math.abs(dy) > 35) {
+    if (dy < 0) jump();
+    else slide();
+  }
+}, { passive: true });
+
+// ------------------------------------------------------------
+// START APPLICATION
+// ------------------------------------------------------------
+
+function startApp() {
+  initThree();
+
+  showScreen('login');
+  setConnection('Offline mode');
+
+  animate();
+}
+
+startApp();

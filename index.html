@@ -1,152 +1,294 @@
 
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#080d12" />
-  <meta name="description" content="Run through the Sambalpur University campus in a 3D multiplayer game." />
-  <title>University Run </title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#061521" />
+  <meta name="description" content="Run, jump, slide and explore Sambalpur University in a 3D campus endless runner." />
+  <title>Campus Runner | Sambalpur University</title>
 </head>
 <body>
-  <div id="game-canvas"></div>
+  <div id="game-canvas" aria-label="3D university campus game"></div>
 
+  <!-- TOP NAVIGATION -->
   <header class="topbar">
-    <a class="brand" href="#" aria-label="Campus Run home">
-      <span class="brand-icon">SC</span>
-      <span>University <b>Run </b></span>
-    </a>
+    <div class="brand">
+      <div class="brand-icon">🏛️</div>
+      <div class="brand-copy">
+        <strong>CAMPUS CHASE <span>3D</span></strong>
+        <small>SAMBALPUR UNIVERSITY · JYOTI VIHAR</small>
+      </div>
+    </div>
+
     <div class="topbar-right">
-      <span id="connection-status" class="connection">OFFLINE</span>
-      <button id="change-name-button" class="small-button hidden">Change player</button>
+      <div class="connection-pill">
+        <span class="status-dot"></span>
+        <span id="connection-status">Connecting...</span>
+      </div>
+      <button id="change-name-button" class="small-button" type="button">
+        <span>♙</span> Player
+      </button>
     </div>
   </header>
 
-  <main>
-    <section id="login-screen" class="screen login-screen">
-      <div class="glass login-card">
-        <span class="eyebrow">YOUR CAMPUS. YOUR RACE.</span>
-        <h1>Ready to <span>run?</span></h1>
-        <p>Enter your player name to explore the campus and race with friends.</p>
+  <main id="ui-layer">
+
+    <!-- PLAYER LOGIN -->
+    <section id="login-screen" class="screen">
+      <div class="panel login-panel">
+        <div class="university-mark">SU</div>
+        <p class="eyebrow"><span class="eyebrow-line"></span> THE CAMPUS IS YOUR PLAYGROUND</p>
+
+        <h1>CAMPUS<br /><span>CHASE.</span></h1>
+
+        <p class="hero-description">
+          Race through the university. Dodge obstacles.
+          Collect coins. Become the campus champion.
+        </p>
+
+        <div class="feature-chips">
+          <span>✦ CAMPUS</span>
+          <span>⚡ ENDLESS RUN</span>
+          <span>♟ MULTIPLAYER</span>
+        </div>
+
         <form id="login-form">
-          <label for="player-name">PLAYER NAME</label>
-          <input id="player-name" name="playerName" maxlength="18"
-                 minlength="2" autocomplete="nickname"
-                 placeholder="Enter your name" required />
+          <label for="player-name">YOUR PLAYER NAME</label>
+          <input
+            id="player-name"
+            name="playerName"
+            maxlength="18"
+            minlength="1"
+            placeholder="Enter your name"
+            autocomplete="nickname"
+            required
+          />
           <p id="login-error" class="error" role="alert"></p>
-          <button class="primary-button" type="submit">ENTER CAMPUS <span>→</span></button>
+          <button type="submit" class="primary-button">
+            ENTER THE CAMPUS <span>→</span>
+          </button>
         </form>
-        <div class="login-foot"><span class="pulse-dot"></span> 3D CAMPUS EXPERIENCE</div>
+
+        <p class="panel-footnote">EXPLORE · COMPETE · CONQUER</p>
       </div>
+
+      <div class="version-label">CAMPUS CHASE <span>v2.0</span></div>
     </section>
 
+    <!-- MAIN MENU -->
     <section id="home-screen" class="screen hidden">
-      <div class="glass menu-card">
-        <span class="eyebrow">WELCOME TO SAMBALPUR UNIVERSITY</span>
-        <h1>Campus <span>Run 3D</span></h1>
-        <p class="muted">Hey, <strong id="welcome-player-name">Runner</strong>. Your next adventure starts here.</p>
-        <div class="menu-buttons">
-          <button id="solo-button" class="primary-button">PLAY SOLO <span>→</span></button>
-          <button id="multiplayer-button" class="secondary-button">MULTIPLAYER</button>
-        </div>
-        <div class="character-picker">
-          <span class="field-label">CHOOSE YOUR RUNNER</span>
-          <div class="character-options">
-            <button class="character-option selected" data-character="Smruti">
-              <span class="avatar avatar-green">S</span>
-              <span><b>Smruti</b><small>Campus sprinter</small></span>
-            </button>
-            <button class="character-option" data-character="Swastik">
-              <span class="avatar avatar-purple">W</span>
-              <span><b>Swastik</b><small>Speed runner</small></span>
-            </button>
+      <div class="panel home-panel">
+        <div class="menu-heading">
+          <div>
+            <p class="eyebrow">SAMBALPUR UNIVERSITY · ODISHA</p>
+            <h1>READY TO<br /><span>RUN?</span></h1>
           </div>
+          <div class="campus-emblem">SU</div>
         </div>
-        <p class="controls-note">Move: ← → / A D · Jump: Space · Slide: ↓ / S</p>
+
+        <p class="muted">Welcome back, <strong id="welcome-player-name">Runner</strong>.</p>
+
+        <div class="section-heading">
+          <span>01</span>
+          <h3>Choose your runner</h3>
+        </div>
+
+        <div class="character-picker">
+          <button class="character-option selected" data-character="Smruti" type="button">
+            <span class="character-preview smruti-preview">S</span>
+            <span class="character-details">
+              <strong>SMRUTI</strong>
+              <small>LEGEND RUNNER</small>
+            </span>
+            <span class="character-check">✓</span>
+          </button>
+
+          <button class="character-option" data-character="Swastik" type="button">
+            <span class="character-preview swastik-preview">W</span>
+            <span class="character-details">
+              <strong>SWASTIK</strong>
+              <small>POWER RUNNER</small>
+            </span>
+            <span class="character-check">✓</span>
+          </button>
+        </div>
+
+        <div class="section-heading">
+          <span>02</span>
+          <h3>Choose your adventure</h3>
+        </div>
+
+        <button id="solo-button" class="primary-button game-mode-button" type="button">
+          <span class="mode-icon">▶</span>
+          <span class="mode-copy">
+            <strong>SOLO RUN</strong>
+            <small>Beat your personal best</small>
+          </span>
+          <span class="mode-arrow">→</span>
+        </button>
+
+        <button id="multiplayer-button" class="secondary-button game-mode-button" type="button">
+          <span class="mode-icon">♟</span>
+          <span class="mode-copy">
+            <strong>PLAY WITH FRIENDS</strong>
+            <small>Race together online</small>
+          </span>
+          <span class="mode-arrow">→</span>
+        </button>
+
+        <div class="controls-hint">
+          <span>← → <small>MOVE</small></span>
+          <span>↑ <small>JUMP</small></span>
+          <span>↓ <small>SLIDE</small></span>
+        </div>
       </div>
     </section>
 
+    <!-- MULTIPLAYER LOBBY -->
     <section id="room-screen" class="screen hidden">
-      <div class="glass menu-card room-card">
-        <button id="back-home-button" class="back-button">← BACK</button>
-        <span class="eyebrow">PLAY WITH FRIENDS</span>
-        <h2>Multiplayer <span>Lobby</span></h2>
-        <div class="room-actions">
-          <div class="room-panel">
-            <h3>Create a room</h3>
-            <p class="muted">Host a race and share your code.</p>
-            <button id="create-room-button" class="primary-button">CREATE ROOM</button>
-          </div>
-          <div class="room-panel">
-            <h3>Join a room</h3>
-            <p class="muted">Enter a friend's five-character code.</p>
-            <form id="join-room-form">
-              <label for="room-code">ROOM CODE</label>
-              <input id="room-code" maxlength="5" minlength="5"
-                     placeholder="ABCDE" autocomplete="off" required />
-              <button class="secondary-button" type="submit">JOIN ROOM</button>
-            </form>
-          </div>
+      <div class="panel room-panel">
+        <button id="back-home-button" class="back-button" type="button">← MAIN MENU</button>
+
+        <p class="eyebrow">CAMPUS CHASE · ONLINE</p>
+        <h2>RUN <span>TOGETHER.</span></h2>
+        <p class="muted">Create a private room or join a friend's race.</p>
+
+        <div class="room-action-card">
+          <div class="room-action-icon">✦</div>
+          <h3>Create a race room</h3>
+          <p>Host a race and share the room code with your friends.</p>
+          <button id="create-room-button" class="primary-button" type="button">
+            CREATE ROOM →
+          </button>
         </div>
-        <div id="room-lobby" class="hidden">
-          <div class="room-code-box">
-            <span class="field-label">YOUR ROOM CODE</span>
-            <strong id="room-code-display">-----</strong>
-            <button id="copy-room-code-button" class="small-button">COPY</button>
+
+        <div class="room-divider"><span>OR JOIN AN EXISTING RACE</span></div>
+
+        <form id="join-room-form">
+          <label for="room-code">ROOM CODE</label>
+          <div class="inline-form">
+            <input
+              id="room-code"
+              maxlength="10"
+              placeholder="ENTER CODE"
+              autocomplete="off"
+            />
+            <button type="submit" class="secondary-button">JOIN →</button>
           </div>
-          <div id="player-list" class="player-list"></div>
-          <p id="lobby-message" class="muted">Waiting for another runner...</p>
-          <button id="start-race-button" class="primary-button hidden">START RACE →</button>
+        </form>
+
+        <div id="room-lobby" class="hidden lobby">
+          <div class="lobby-code-card">
+            <p>SHARE THIS ROOM CODE</p>
+            <div class="room-code-row">
+              <strong id="room-code-display">------</strong>
+              <button id="copy-room-code-button" class="small-button" type="button">COPY</button>
+            </div>
+          </div>
+
+          <h3>Racers in the lobby</h3>
+          <ul id="player-list"></ul>
+
+          <p id="lobby-message" class="muted">Waiting for players...</p>
+          <button id="start-race-button" class="primary-button" type="button">
+            START RACE →
+          </button>
         </div>
+
         <p id="room-error" class="error" role="alert"></p>
       </div>
     </section>
 
-    <section id="hud" class="hud hidden">
-      <div class="hud-pill"><small>DISTANCE</small><strong><span id="distance-value">0</span> m</strong></div>
-      <div class="hud-pill"><small>COINS</small><strong>✦ <span id="coins-value">0</span></strong></div>
-      <button id="pause-button" class="pause-button" aria-label="Pause game">Ⅱ</button>
-    </section>
-
-    <section id="countdown-screen" class="overlay-screen hidden">
-      <div id="countdown-number">3</div>
-    </section>
-
-    <section id="pause-screen" class="screen overlay-screen hidden">
-      <div class="glass menu-card compact-card">
-        <span class="eyebrow">TAKE A BREATHER</span>
-        <h2>Game <span>Paused</span></h2>
-        <button id="resume-button" class="primary-button">RESUME RUN</button>
-        <button id="quit-button" class="secondary-button">QUIT TO MENU</button>
-      </div>
-    </section>
-
-    <section id="over-screen" class="screen overlay-screen hidden">
-      <div class="glass menu-card compact-card">
-        <span class="eyebrow">RACE COMPLETE</span>
-        <h2>Nice <span>run!</span></h2>
-        <div class="results-grid">
-          <div><small>DISTANCE</small><strong id="final-distance">0 m</strong></div>
-          <div><small>COINS</small><strong id="final-coins">0</strong></div>
+    <!-- IN-GAME HEADS-UP DISPLAY -->
+    <section id="hud" class="hidden" aria-label="Game statistics">
+      <div class="hud-top">
+        <div class="hud-brand">
+          <span class="hud-brand-icon">SU</span>
+          <div>
+            <strong>CAMPUS CHASE</strong>
+            <small>JYOTI VIHAR CIRCUIT</small>
+          </div>
         </div>
-        <button id="retry-button" class="primary-button">RUN AGAIN</button>
-        <button id="menu-button" class="secondary-button">MAIN MENU</button>
+
+        <button id="pause-button" class="pause-button" type="button" aria-label="Pause game">
+          Ⅱ <span>PAUSE</span>
+        </button>
+      </div>
+
+      <div class="hud-stats">
+        <div class="hud-stat">
+          <small>DISTANCE</small>
+          <strong><span id="distance-value">0</span><small> M</small></strong>
+        </div>
+        <div class="hud-stat coin-stat">
+          <small>COINS</small>
+          <strong><span class="coin-symbol">●</span> <span id="coins-value">0</span></strong>
+        </div>
+      </div>
+
+      <div class="hud-location">
+        <span class="location-dot"></span>
+        <span id="campus-location">UNIVERSITY CAMPUS</span>
       </div>
     </section>
 
-    <div id="toast" class="toast hidden" role="status"></div>
+    <!-- RACE COUNTDOWN -->
+    <section id="countdown-screen" class="overlay-screen hidden">
+      <div class="countdown-content">
+        <p class="eyebrow">GET READY, RUNNER</p>
+        <div id="countdown-number">3</div>
+        <p>THE CAMPUS AWAITS</p>
+      </div>
+    </section>
 
-    <div id="mobile-controls" class="mobile-controls hidden">
-      <div class="control-group">
-        <button id="left-control" aria-label="Move left">←</button>
-        <button id="right-control" aria-label="Move right">→</button>
+    <!-- PAUSE MENU -->
+    <section id="pause-screen" class="overlay-screen hidden">
+      <div class="panel compact-panel">
+        <div class="pause-symbol">Ⅱ</div>
+        <p class="eyebrow">TAKE A BREATHER</p>
+        <h2>RUN <span>PAUSED</span></h2>
+        <p class="muted">Your campus adventure is waiting.</p>
+        <button id="resume-button" class="primary-button" type="button">RESUME RUN →</button>
+        <button id="quit-button" class="secondary-button" type="button">QUIT RUN</button>
       </div>
-      <div class="control-group">
-        <button id="slide-control" aria-label="Slide">↓</button>
-        <button id="jump-control" aria-label="Jump">↑</button>
+    </section>
+
+    <!-- RACE RESULTS -->
+    <section id="over-screen" class="overlay-screen hidden">
+      <div class="panel compact-panel results-panel">
+        <div class="results-medal">★</div>
+        <p class="eyebrow">CAMPUS CHASE · RESULTS</p>
+        <h2>GREAT <span>RUN!</span></h2>
+        <p class="muted">Every run makes you a better runner.</p>
+
+        <div class="results-grid">
+          <div class="result-stat">
+            <span>DISTANCE</span>
+            <strong><span id="final-distance">0</span> m</strong>
+          </div>
+          <div class="result-stat">
+            <span>COINS</span>
+            <strong id="final-coins">0</strong>
+          </div>
+        </div>
+
+        <button id="retry-button" class="primary-button" type="button">RUN AGAIN →</button>
+        <button id="menu-button" class="secondary-button" type="button">MAIN MENU</button>
       </div>
-    </div>
+    </section>
+
+    <!-- NOTIFICATIONS -->
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   </main>
+
+  <!-- MOBILE GAME CONTROLS -->
+  <nav id="mobile-controls" class="hidden" aria-label="Touch game controls">
+    <button id="left-control" type="button" aria-label="Move left">◀</button>
+    <button id="slide-control" type="button" aria-label="Slide">▼</button>
+    <button id="jump-control" type="button" aria-label="Jump">▲</button>
+    <button id="right-control" type="button" aria-label="Move right">▶</button>
+  </nav>
 
   <script type="module" src="/src/main.js"></script>
 </body>
