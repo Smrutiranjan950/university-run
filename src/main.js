@@ -48,6 +48,17 @@ const FRONT_X = 12.5;   // distance from road centre to every building facade
 const WALL_X = 23.8;    // campus boundary wall (lines up with the gate's pink wall)
 const AVENUE_X = 8.9;   // roadside avenue trees
 
+// Extra road in front of the main gate (outside the campus), joined to the
+// end of the plaza segment so the approach to the gate feels long.
+const APPROACH_LENGTH = 96;
+
+// SUIIT building: stands to the right of the main gate, just outside the
+// campus wall, facing the road. A branch road runs from its entrance back to
+// the main road in front of the main gate (z = 10 is outside the gate, level
+// with the gate's brick apron).
+const SUIIT_X = 40;
+const SUIIT_Z = 10;
+
 // Building slots along each side of a segment (local z of building centre).
 // Left and right are staggered so the road never feels mirrored.
 const LEFT_SLOTS = [-12, -36];
@@ -56,6 +67,15 @@ const RIGHT_SLOTS = [-18, -42];
 // Intro camera: starts pulled back outside the gate, then swoops in at "GO".
 const INTRO_BACK = 14;
 const INTRO_UP = 1.0;
+
+// Menu camera (login / home / character select / room): looks down the
+// approach road at the main gate with the SUIIT building beside it.
+const MENU_LOOK = new THREE.Vector3(14, 4, 0);
+
+// Camera shake (kept very small so the map stays steady)
+const CAMERA_BOB = 0.004;     // running bob amplitude (was 0.025)
+const HIT_SHAKE = 0.07;       // collision shake amplitude (was 0.35)
+const HIT_SHAKE_MS = 220;     // collision shake length (was 350)
 
 const COLORS = {
   sky: 0x9dd7ec,
@@ -111,6 +131,14 @@ let invulnerableUntil = 0;
 let hitCount = 0;
 let shakeUntil = 0;
 let introBlend = 1;
+let menuBlend = 1;
+
+// Reusable vectors for the camera
+const _camTarget = new THREE.Vector3();
+const _menuTarget = new THREE.Vector3();
+const _lookGame = new THREE.Vector3();
+const _lookMenu = new THREE.Vector3();
+const _lookCur = new THREE.Vector3();
 
 const heldKeys = new Set();
 
@@ -153,11 +181,8 @@ const ui = {
   retry: $('retry-button'),
   menu: $('menu-button'),
   toast: $('toast'),
-  mobile: $('mobile-controls'),
-  left: $('left-control'),
-  right: $('right-control'),
-  jump: $('jump-control'),
-  slide: $('slide-control')
+  // On-screen control buttons were removed. Keyboard and swipe still work.
+  mobile: $('mobile-controls')
 };
 
 function showScreen(name) {
@@ -173,12 +198,10 @@ function showScreen(name) {
   if (name === 'login') ui.login?.classList.remove('hidden');
   if (name === 'home') ui.home?.classList.remove('hidden');
   if (name === 'room') ui.room?.classList.remove('hidden');
-  if (name === 'game') {
-    ui.hud?.classList.remove('hidden');
-    ui.mobile?.classList.remove('hidden');
-  } else {
-    ui.mobile?.classList.add('hidden');
-  }
+  if (name === 'game') ui.hud?.classList.remove('hidden');
+
+  // The control buttons below the game are never shown any more.
+  ui.mobile?.classList.add('hidden');
 }
 
 function showToast(message) {
@@ -261,6 +284,82 @@ function makeNoiseTexture({
   return t;
 }
 
+// Embossed gold coin face. kind 'color' = the gold colour map,
+// kind 'bump' = a grey height map so the design looks stamped into the metal.
+function makeCoinFaceTexture(kind) {
+  const size = 256;
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const g = c.getContext('2d');
+  const cx = size / 2;
+  const color = kind === 'color';
+
+  if (color) {
+    const grad = g.createRadialGradient(cx * 0.8, cx * 0.7, 8, cx, cx, cx * 1.05);
+    grad.addColorStop(0, '#fff1a8');
+    grad.addColorStop(0.45, '#f4c542');
+    grad.addColorStop(1, '#b5830c');
+    g.fillStyle = grad;
+  } else {
+    g.fillStyle = '#404040';
+  }
+  g.fillRect(0, 0, size, size);
+
+  const design = (ink, dx, dy) => {
+    g.save();
+    g.translate(dx, dy);
+    g.strokeStyle = ink;
+    g.fillStyle = ink;
+
+    g.lineWidth = 12;
+    g.beginPath(); g.arc(cx, cx, 112, 0, Math.PI * 2); g.stroke();
+
+    for (let i = 0; i < 40; i++) {
+      const a = (i / 40) * Math.PI * 2;
+      g.beginPath();
+      g.arc(cx + Math.cos(a) * 94, cx + Math.sin(a) * 94, 3.6, 0, Math.PI * 2);
+      g.fill();
+    }
+
+    g.lineWidth = 5;
+    g.beginPath(); g.arc(cx, cx, 76, 0, Math.PI * 2); g.stroke();
+
+    g.font = 'bold 92px Georgia, serif';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText('SU', cx, cx + 6);
+
+    // small stars above and below the lettering
+    const star = (sx, sy, r) => {
+      g.beginPath();
+      for (let i = 0; i < 10; i++) {
+        const rr = i % 2 ? r * 0.45 : r;
+        const a = -Math.PI / 2 + (i * Math.PI) / 5;
+        g.lineTo(sx + Math.cos(a) * rr, sy + Math.sin(a) * rr);
+      }
+      g.closePath();
+      g.fill();
+    };
+    star(cx, cx - 52, 11);
+    star(cx, cx + 62, 11);
+
+    g.restore();
+  };
+
+  if (color) {
+    design('#fff4b8', -2, -2);   // light edge (top-left)
+    design('#8a5a00', 2, 2);     // shadow edge (bottom-right)
+    design('#c9921a', 0, 0);     // stamped face
+  } else {
+    design('#ffffff', 0, 0);
+  }
+
+  const t = new THREE.CanvasTexture(c);
+  t.anisotropy = 8;
+  if (color) t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
 const materials = {
   grass: new THREE.MeshStandardMaterial({
     map: makeNoiseTexture({ base: [62, 128, 58], variance: 34, specks: 0.01, repeat: [70, 110], blades: true }),
@@ -309,7 +408,18 @@ const materials = {
   red: makeMaterial(0xd74438),
   barrierWhite: makeMaterial(0xf0eee6),
   blue: makeMaterial(COLORS.blue),
-  orange: makeMaterial(COLORS.orange)
+  orange: makeMaterial(COLORS.orange),
+  // Shiny stamped gold coin face
+  coinFace: new THREE.MeshStandardMaterial({
+    map: makeCoinFaceTexture('color'),
+    bumpMap: makeCoinFaceTexture('bump'),
+    bumpScale: 2.2,
+    metalness: 0.92,
+    roughness: 0.28,
+    emissive: 0x5a3b00,
+    emissiveIntensity: 0.22,
+    envMapIntensity: 1.5
+  })
 };
 
 const foliageMats = [0x2a7a45, 0x3a8c4a, 0x1f6a3c, 0x4a9a4c].map((c) => makeMaterial(c, 0.9));
@@ -323,6 +433,11 @@ const windowGeo = new THREE.BoxGeometry(0.62, 0.48, 0.04);
 const laneGeo = new THREE.BoxGeometry(0.09, 0.025, 2.7);
 const zebraGeo = new THREE.BoxGeometry(0.55, 0.03, 3.4);
 const lawnGeo = new THREE.PlaneGeometry(WALL_X - 7.2, SEGMENT_LENGTH);
+
+// Realistic coin: thick disc with a milled edge, a raised rim and a stamped face
+const coinBodyGeo = new THREE.CylinderGeometry(0.36, 0.36, 0.08, 48);
+const coinFaceGeo = new THREE.CircleGeometry(0.3, 48);
+const coinRingGeo = new THREE.TorusGeometry(0.325, 0.028, 10, 48);
 
 // Free GPU memory of anything that is removed from the scene.
 function disposeObject(root) {
@@ -346,19 +461,37 @@ function disposeObject(root) {
 // THREE.JS INITIALIZATION
 // ------------------------------------------------------------
 
+// Camera pose used behind the menus. It sits high up on the approach road,
+// far enough back to see the main gate AND the SUIIT building beside it.
+// Narrow (portrait) screens pull back further so both still fit.
+function getMenuCameraPose(timeSec, outPos, outLook) {
+  const aspect = window.innerWidth / Math.max(1, window.innerHeight);
+  const back = Math.max(0, 1.4 - aspect) * 18;
+
+  outPos.set(
+    10 + Math.sin(timeSec * 0.12) * 2.0,
+    11 + back * 0.15 + Math.sin(timeSec * 0.17) * 0.25,
+    72 + back
+  );
+
+  outLook.copy(MENU_LOOK);
+}
+
 function initThree() {
   scene = new THREE.Scene();
 
+  // Near plane 0.5 (was 0.1): much better depth precision, so the ground
+  // and road no longer flicker/shimmer in the distance.
   camera = new THREE.PerspectiveCamera(
     62,
     window.innerWidth / window.innerHeight,
-    0.1,
+    0.5,
     400
   );
 
-  // Start pulled back OUTSIDE the gate so the whole gate is in view.
-  camera.position.set(LANES[START_LANE], 4.4 + INTRO_UP, 9.5 + INTRO_BACK);
-  camera.lookAt(GATE_OFFSET_X * 0.8, 2.1, -7);
+  // Start on the menu view: approach road, main gate and SUIIT.
+  getMenuCameraPose(performance.now() / 1000, camera.position, _lookCur);
+  camera.lookAt(_lookCur);
 
   renderer = new THREE.WebGLRenderer({
     antialias: true,
@@ -814,11 +947,12 @@ function createWorld() {
   coins = [];
   decorations = [];
 
-  // Long grass base
+  // Long grass base (extended towards +z so the longer approach road and the
+  // menu camera never see the edge of the ground)
   addBox(
     scene,
-    [0, -0.38, -90],
-    [240, 0.5, 400],
+    [0, -0.38, -80],
+    [240, 0.5, 440],
     materials.grass,
     { castShadow: false }
   );
@@ -833,9 +967,93 @@ function createWorld() {
   }
 
   buildMainGate();
-  // SUIIT stands on the right, beyond the boundary wall, beside the gate.
-  buildIITBuilding(50, GATE_Z - 50, -Math.PI / 2);
+  buildApproachRoad();
+
+  // SUIIT stands to the right of the main gate, just outside the boundary
+  // wall, with its front facing the road.
+  buildIITBuilding(SUIIT_X, SUIIT_Z, -Math.PI / 2);
+
+  // Billboard named SUIIT beside the road that leads to the building
+  buildSuiitBillboard();
+
   buildDistantHills();
+}
+
+// Extra road in front of the main gate. It continues the plaza segment
+// straight back (+z) and scrolls away with the world after the run starts.
+function buildApproachRoad() {
+  const g = new THREE.Group();
+  g.name = 'ApproachRoad';
+  g.userData.scroll = true;
+  // The group origin starts at z = SEGMENT_LENGTH; its geometry lies further
+  // back, so it is safe to remove once the origin is well past the camera.
+  g.userData.removeZ = SEGMENT_LENGTH + 40;
+
+  // Plaza segment 0 ends at world z = SEGMENT_LENGTH, so this joins it.
+  g.position.z = SEGMENT_LENGTH;
+
+  const L = APPROACH_LENGTH;
+  const cz = L / 2;
+
+  // Same textures as the normal road, repeated over the longer length
+  const stretch = (base, rx, ry) => {
+    const m = base.clone();
+    m.map = base.map.clone();
+    m.map.repeat.set(rx, ry);
+    m.map.needsUpdate = true;
+    return m;
+  };
+
+  const k = L / SEGMENT_LENGTH;
+  const roadMat = stretch(materials.road, 3, 12 * k);
+  const walkMat = stretch(materials.sidewalk, 1, 12 * k);
+  const lawnMat = stretch(materials.lawn, 8, 7 * k);
+  const longLawn = new THREE.PlaneGeometry(WALL_X - 7.2, L);
+
+  addBox(g, [0, -0.08, cz], [ROAD_WIDTH, 0.2, L], roadMat);
+
+  for (const side of [-1, 1]) {
+    addBox(g, [side * 6.1, -0.02, cz], [2.2, 0.24, L], walkMat);
+    addBox(g, [side * 5.05, 0.04, cz], [0.12, 0.06, L], materials.white, { castShadow: false });
+
+    addMesh(
+      g,
+      longLawn,
+      lawnMat,
+      [side * (7.2 + (WALL_X - 7.2) / 2), -0.1, cz],
+      { rotation: [-Math.PI / 2, 0, 0], castShadow: false }
+    );
+  }
+
+  // Broken lane markings (continue the pattern of the plaza segment)
+  const laneItems = [];
+  for (let zz = 4; zz < L; zz += 7) {
+    laneItems.push({ p: [-1.55, 0.035, zz] });
+    laneItems.push({ p: [1.55, 0.035, zz] });
+  }
+  addInstanced(g, laneGeo, materials.line, laneItems, { receiveShadow: false });
+
+  // Zebra crossing in front of the gate
+  const stripes = [];
+  for (let x = -4.2; x <= 4.21; x += 1.05) {
+    stripes.push({ p: [x, 0.03, 18] });
+  }
+  addInstanced(g, zebraGeo, materials.line, stripes, { receiveShadow: false });
+
+  // Lamps and avenue trees all along the approach
+  for (let zz = 10; zz < L; zz += 16) {
+    createLamp(g, -6.5, zz);
+    createLamp(g, 6.5, zz);
+  }
+
+  for (let zz = 8; zz < L; zz += 13) {
+    createTree(g, -(AVENUE_X + random(-0.3, 0.3)), zz + random(-2, 2), choose(['round', 'spread', 'tall']));
+    createTree(g, AVENUE_X + random(-0.3, 0.3), zz + 6.5 + random(-2, 2), choose(['round', 'spread', 'tall']));
+  }
+
+  scene.add(g);
+  decorations.push(g);
+  return g;
 }
 
 const BUILDING_NAMES_LEFT = [
@@ -874,11 +1092,12 @@ function createCampusSegment(z, { plaza = false } = {}) {
     addBox(group, [side * 5.05, 0.04, -SEGMENT_LENGTH / 2], [0.12, 0.06, SEGMENT_LENGTH], materials.white, { castShadow: false });
 
     // Maintained lawn between the sidewalk and the boundary wall
+    // (raised slightly from -0.115 to -0.1 to stop depth flicker on the grass)
     addMesh(
       group,
       lawnGeo,
       materials.lawn,
-      [side * (7.2 + (WALL_X - 7.2) / 2), -0.115, -SEGMENT_LENGTH / 2],
+      [side * (7.2 + (WALL_X - 7.2) / 2), -0.1, -SEGMENT_LENGTH / 2],
       { rotation: [-Math.PI / 2, 0, 0], castShadow: false }
     );
   }
@@ -1255,25 +1474,22 @@ function createTextTexture(text, foreground = '#ffffff', background = '#174e3a')
 }
 
 // ------------------------------------------------------------
-// MAIN GATE (Sambalpur University)
+// MAIN GATE (Sambalpur University) - matched to the reference photo
 // ------------------------------------------------------------
-// Modelled on the real gate: a central red tower monument with the flame
-// sculpture, COME TO LEARN / GO TO SERVE plaques and a brick base, flanked
-// by two lettered side arches with yellow-black iron gates and stone pillars.
+// A central red tower monument with the flame sculpture, COME TO LEARN /
+// GO TO SERVE plaques and a brick base, flanked by two lettered side arches
+// with yellow-black iron gates and stone pillars.
 //
 // The gate is shifted sideways so that ONE of the two entrance arches sits on
 // the runner's start lane (START_LANE). It stands just BEHIND the start line,
 // so the run begins inside the entrance and the gate scrolls away behind.
 
-// ------------------------------------------------------------
-// MAIN GATE (Sambalpur University) - matched to the reference photo
-// Drop-in replacement for the existing buildMainGate() function.
-// ------------------------------------------------------------
-
 function buildMainGate() {
   const gate = new THREE.Group();
   gate.name = 'SambalpurUniversityMainGate';
   gate.userData.isGate = true;
+  gate.userData.scroll = true;
+  gate.userData.removeZ = 60;
 
   const OX = GATE_OFFSET_X;     // world x of the central monument
   const PILLAR_X = 9.3;         // outer stone pillar centre
@@ -1711,14 +1927,18 @@ function buildMainGate() {
   decorations.push(gate);
   return gate;
 }
+
 // ------------------------------------------------------------
 // SUIIT BUILDING (beside the main gate)
+// Sambalpur University Institute of Information Technology
 // ------------------------------------------------------------
 
-function buildIITBuilding(x = 40, z = -58, rotY = -Math.PI / 2) {
+function buildIITBuilding(x = SUIIT_X, z = SUIIT_Z, rotY = -Math.PI / 2) {
   const b = new THREE.Group();
   b.name = 'SUIITBuilding';
   b.userData.isBuilding = true;
+  b.userData.scroll = true;
+  b.userData.removeZ = 60;
 
   function tex(w, h, draw, rx = 1, ry = 1) {
     const c = document.createElement('canvas');
@@ -1739,17 +1959,17 @@ function buildIITBuilding(x = 40, z = -58, rotY = -Math.PI / 2) {
     if (!boxCache.has(k)) boxCache.set(k, new THREE.BoxGeometry(w, h, d));
     return boxCache.get(k);
   };
-  function box(material, x, y, zz, w, h, d, shadow = true) {
+  function box(material, bx, by, zz, w, h, d, shadow = true) {
     const m = new THREE.Mesh(boxGeo(w, h, d), material);
-    m.position.set(x, y, zz);
+    m.position.set(bx, by, zz);
     m.castShadow = shadow;
     m.receiveShadow = true;
     b.add(m);
     return m;
   }
-  function plane(material, w, h, x, y, zz) {
+  function plane(material, w, h, px, py, zz) {
     const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), material);
-    m.position.set(x, y, zz);
+    m.position.set(px, py, zz);
     b.add(m);
     return m;
   }
@@ -1837,26 +2057,61 @@ function buildIITBuilding(x = 40, z = -58, rotY = -Math.PI / 2) {
     plane(glassMat(4, 1, 512, 140, ['#5d8aa8', '#2f566f']), 7.6, 2.0, s * 19.5, 7.5, 3.02);
   }
 
-  // lawn court with red carpet
+  // Lawn court with red carpet. Kept shallow (about 12 deep) so the whole
+  // building fits between the campus wall and the camera view.
   const courtMat = mat({
-    map: tex(1024, 400, (g, w, h) => {
+    map: tex(1024, 260, (g, w, h) => {
       g.fillStyle = '#2f9e4a'; g.fillRect(0, 0, w, h);
       g.strokeStyle = 'rgba(255,255,255,0.8)'; g.lineWidth = 5;
-      g.strokeRect(20, 20, w - 40, h - 40);
-      g.beginPath(); g.moveTo(w / 2, 20); g.lineTo(w / 2, h - 20); g.stroke();
-      g.strokeRect(20, 110, 200, 180); g.strokeRect(w - 220, 110, 200, 180);
+      g.strokeRect(14, 14, w - 28, h - 28);
+      g.beginPath(); g.moveTo(w / 2, 14); g.lineTo(w / 2, h - 14); g.stroke();
+      g.strokeRect(14, 60, 170, h - 120); g.strokeRect(w - 184, 60, 170, h - 120);
     }),
     roughness: 1
   });
-  const lawn = new THREE.Mesh(new THREE.PlaneGeometry(46, 17), courtMat);
+  const lawn = new THREE.Mesh(new THREE.PlaneGeometry(46, 11.7), courtMat);
   lawn.rotation.x = -Math.PI / 2;
-  lawn.position.set(0, 0.03, 17.5);
+  lawn.position.set(0, 0.03, 9.65);   // covers local z 3.8 -> 15.5
   lawn.receiveShadow = true;
   b.add(lawn);
 
-  const rug = new THREE.Mesh(new THREE.PlaneGeometry(5, 15), carpet);
+  // ---- Road from the SUIIT entrance to the main road in front of the main gate ----
+  // Local +z points at the main road (world -x). The road runs from the
+  // entrance steps to the main road's right edge (world x = 5). Its top sits
+  // above the gate's brick apron and the sidewalk, so it crosses them cleanly
+  // and nothing flickers.
+  const ROAD_FROM = 8.45;
+  const ROAD_TO = x - 5.0;
+  const roadLen = ROAD_TO - ROAD_FROM;
+  const roadMid = (ROAD_FROM + ROAD_TO) / 2;
+
+  const branchMat = materials.road.clone();
+  branchMat.map = materials.road.map.clone();
+  branchMat.map.repeat.set(1.5, roadLen / 4);
+  branchMat.map.needsUpdate = true;
+
+  box(branchMat, 0, 0.07, roadMid, 5, 0.14, roadLen, false);
+
+  // edge lines, raised kerbs and a dashed centre line
+  const lineMat = mat({ color: 0xf3f1d9, roughness: 0.8 });
+  for (const s of [-1, 1]) {
+    box(white, s * 2.3, 0.15, roadMid, 0.1, 0.02, roadLen, false);
+    box(trim, s * 2.75, 0.1, roadMid, 0.5, 0.2, roadLen, false);
+  }
+  for (let lz = ROAD_FROM + 2; lz < ROAD_TO - 1; lz += 4) {
+    box(lineMat, 0, 0.15, lz, 0.1, 0.02, 1.8, false);
+  }
+
+  // street lamps along the SUIIT road
+  for (const lz of [14, 22, 30]) {
+    createLamp(b, -3.5, lz);
+    createLamp(b, 3.5, lz);
+  }
+
+  // red carpet at the entrance, laid on the road end
+  const rug = new THREE.Mesh(new THREE.PlaneGeometry(3.6, 3), carpet);
   rug.rotation.x = -Math.PI / 2;
-  rug.position.set(0, 0.05, 16.5);
+  rug.position.set(0, 0.16, 9.95);    // from the steps outwards
   b.add(rug);
 
   // potted plants along the facade
@@ -1881,6 +2136,127 @@ function buildIITBuilding(x = 40, z = -58, rotY = -Math.PI / 2) {
   scene.add(b);
   decorations.push(b);
   return b;
+}
+
+// ------------------------------------------------------------
+// SUIIT BILLBOARD (on the lawn in front of the gate, beside the SUIIT road)
+// ------------------------------------------------------------
+
+function buildSuiitBillboard() {
+  const g = new THREE.Group();
+  g.name = 'SUIITBillboard';
+  g.userData.scroll = true;
+  g.userData.removeZ = 60;
+
+  const W = 11;
+  const H = 5;
+
+  // board artwork
+  const c = document.createElement('canvas');
+  c.width = 1536;
+  c.height = 700;
+  const t = c.getContext('2d');
+
+  const bg = t.createLinearGradient(0, 0, c.width, c.height);
+  bg.addColorStop(0, '#0b2559');
+  bg.addColorStop(1, '#1d56ad');
+  t.fillStyle = bg;
+  t.fillRect(0, 0, c.width, c.height);
+
+  t.strokeStyle = '#ffffff';
+  t.lineWidth = 16;
+  t.strokeRect(14, 14, c.width - 28, c.height - 28);
+  t.strokeStyle = '#ff8a2b';
+  t.lineWidth = 8;
+  t.strokeRect(38, 38, c.width - 76, c.height - 76);
+
+  t.textAlign = 'center';
+  t.textBaseline = 'middle';
+
+  // big SUIIT lettering
+  t.font = "900 380px 'Arial Black', Arial, sans-serif";
+  t.lineJoin = 'round';
+  t.lineWidth = 22;
+  t.strokeStyle = '#0a1c40';
+  t.strokeText('SUIIT', 650, 270, 1100);
+  t.fillStyle = '#ffffff';
+  t.fillText('SUIIT', 650, 270, 1100);
+
+  // arrow towards the SUIIT road
+  t.fillStyle = '#ff8a2b';
+  t.fillRect(1235, 248, 150, 46);
+  t.beginPath();
+  t.moveTo(1380, 200);
+  t.lineTo(1480, 271);
+  t.lineTo(1380, 342);
+  t.closePath();
+  t.fill();
+
+  t.fillStyle = '#ffffff';
+  t.font = 'bold 72px Arial, sans-serif';
+  t.fillText('SAMBALPUR UNIVERSITY', 768, 525, 1360);
+  t.fillStyle = '#ffcf7a';
+  t.font = 'bold 56px Arial, sans-serif';
+  t.fillText('INSTITUTE OF INFORMATION TECHNOLOGY', 768, 605, 1360);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+
+  const steel = makeMaterial(0x39424b, 0.6, { metalness: 0.5 });
+  const faceMat = new THREE.MeshStandardMaterial({
+    map: tex,
+    emissive: 0xffffff,
+    emissiveMap: tex,
+    emissiveIntensity: 0.4,
+    roughness: 0.6
+  });
+
+  const put = (geo, mat, x, y, z) => {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    m.castShadow = true;
+    m.receiveShadow = true;
+    g.add(m);
+    return m;
+  };
+
+  const BOARD_Y = 7.5;
+
+  // board: index 4 is the front (+z) face
+  put(new THREE.BoxGeometry(W, H, 0.3), [steel, steel, steel, steel, faceMat, steel], 0, BOARD_Y, 0);
+
+  // orange frame
+  const frame = makeMaterial(0xff8a2b, 0.5);
+  put(new THREE.BoxGeometry(W + 0.5, 0.25, 0.45), frame, 0, BOARD_Y + H / 2 + 0.12, 0);
+  put(new THREE.BoxGeometry(W + 0.5, 0.25, 0.45), frame, 0, BOARD_Y - H / 2 - 0.12, 0);
+  for (const s of [-1, 1]) {
+    put(new THREE.BoxGeometry(0.25, H, 0.45), frame, s * (W / 2 + 0.12), BOARD_Y, 0);
+  }
+
+  // posts + concrete footings
+  const concrete = makeMaterial(0xb8b6ae, 0.9);
+  for (const s of [-1, 1]) {
+    put(new THREE.CylinderGeometry(0.22, 0.26, 7.4, 10), steel, s * 3.9, 3.7, -0.45);
+    put(new THREE.BoxGeometry(1.3, 0.5, 1.3), concrete, s * 3.9, 0.25, -0.45);
+  }
+  put(new THREE.BoxGeometry(8.4, 0.2, 0.2), steel, 0, 5.4, -0.3);
+
+  // spot lamps on top, shining down on the board
+  const lampMat = makeMaterial(0xfff1c2, 0.3, { emissive: 0xffe9a8, emissiveIntensity: 0.9 });
+  for (const x of [-3.5, 0, 3.5]) {
+    put(new THREE.BoxGeometry(0.1, 0.1, 0.8), steel, x, BOARD_Y + H / 2 + 0.35, 0.35);
+    put(new THREE.BoxGeometry(0.55, 0.22, 0.4), lampMat, x, BOARD_Y + H / 2 + 0.32, 0.8);
+  }
+
+  // Stands on the lawn between the main road and the SUIIT road, turned a
+  // little towards the menu camera so the lettering reads from far away.
+  g.position.set(16, 0, 18);
+  g.rotation.y = -0.15;
+
+  scene.add(g);
+  decorations.push(g);
+  return g;
 }
 
 function buildDistantHills() {
@@ -2025,14 +2401,30 @@ function createCoin(laneIndex, z, y = 1.25) {
   const group = new THREE.Group();
   group.position.set(LANES[laneIndex], y, z);
 
-  const coin = addMesh(
-    group,
-    new THREE.TorusGeometry(0.34, 0.105, 8, 18),
-    materials.gold,
-    [0, 0, 0]
-  );
+  // The spinner turns around the vertical axis, like a real coin on its edge.
+  const coin = new THREE.Group();
+  coin.rotation.y = Math.random() * Math.PI * 2;
+  group.add(coin);
 
-  coin.rotation.y = Math.PI / 2;
+  // Disc body (cylinder axis turned to z so the faces look along the road)
+  const body = new THREE.Mesh(coinBodyGeo, materials.gold);
+  body.rotation.x = Math.PI / 2;
+  body.castShadow = true;
+  coin.add(body);
+
+  // Raised rim + stamped face on both sides
+  for (const side of [1, -1]) {
+    const ring = new THREE.Mesh(coinRingGeo, materials.gold);
+    ring.position.z = side * 0.04;
+    ring.castShadow = true;
+    coin.add(ring);
+
+    const face = new THREE.Mesh(coinFaceGeo, materials.coinFace);
+    face.position.z = side * 0.0415;
+    if (side < 0) face.rotation.y = Math.PI;
+    coin.add(face);
+  }
+
   scene.add(group);
 
   coins.push({
@@ -2040,6 +2432,7 @@ function createCoin(laneIndex, z, y = 1.25) {
     coin,
     lane: laneIndex,
     z,
+    baseY: y,
     collected: false
   });
 }
@@ -2117,12 +2510,10 @@ function resetRace() {
     remotePlayer = null;
   }
 
-  // Back to the pulled-back view of the gate entrance
+  // The camera is NOT teleported here any more. It glides on its own:
+  // menu view -> pulled-back gate view during the countdown -> behind the
+  // runner at "GO".
   introBlend = 1;
-  if (camera) {
-    camera.position.set(LANES[START_LANE], 4.4 + INTRO_UP, 9.5 + INTRO_BACK);
-    camera.lookAt(GATE_OFFSET_X * 0.8, 2.1, -7);
-  }
 
   updateHUD();
 }
@@ -2188,7 +2579,6 @@ function finishRace() {
   ui.finalCoins && (ui.finalCoins.textContent = String(coinCount));
 
   ui.hud?.classList.add('hidden');
-  ui.mobile?.classList.add('hidden');
   ui.over?.classList.remove('hidden');
 }
 
@@ -2218,7 +2608,6 @@ function quitRun() {
   ui.countdown?.classList.add('hidden');
   ui.hud?.classList.add('hidden');
   ui.over?.classList.add('hidden');
-  ui.mobile?.classList.add('hidden');
 
   if (gameMode === 'multi' && roomCode) {
     socket.emit('room:leave');
@@ -2227,7 +2616,7 @@ function quitRun() {
   roomCode = '';
   isHost = false;
 
-  // Rebuild the start scene so the menu shows the gate entrance again
+  // Rebuild the start scene so the menu shows the gate, road and SUIIT again
   resetRace();
   showScreen('home');
 }
@@ -2324,16 +2713,14 @@ function updateWorld(delta) {
     }
   }
 
-  // Move the gate and the SUIIT building with the scrolling world.
-  // Remove them permanently once they are far behind the camera.
+  // Move the gate, the approach road and the SUIIT building with the
+  // scrolling world. Remove them permanently once they are far behind.
   for (const item of [...decorations]) {
-    if (!item.userData?.isGate && !item.userData?.isBuilding) continue;
+    if (!item.userData?.scroll) continue;
 
     item.position.z += movement;
 
-    const removeZ = item.userData.isBuilding ? 90 : 60;
-
-    if (item.position.z > removeZ) {
+    if (item.position.z > (item.userData.removeZ ?? 60)) {
       scene.remove(item);
       disposeObject(item);
 
@@ -2352,6 +2739,7 @@ function updateWorld(delta) {
     item.group.position.z = item.z;
     item.coin.rotation.y += delta * 4.5;
     item.group.rotation.y = Math.sin(elapsed * 3 + item.z) * 0.16;
+    item.group.position.y = item.baseY + Math.sin(elapsed * 3 + item.z * 0.4) * 0.07;
   }
 
   obstacles = obstacles.filter((item) => {
@@ -2397,7 +2785,7 @@ function checkCollisions() {
     obstacle.passed = true;
     hitCount++;
     invulnerableUntil = performance.now() + 1100;
-    shakeUntil = performance.now() + 350;
+    shakeUntil = performance.now() + HIT_SHAKE_MS;
     speed = Math.max(START_SPEED * 0.72, speed - 2.5);
 
     showToast(hitCount >= 3
@@ -2430,54 +2818,72 @@ function checkCollisions() {
 function updateCamera(delta) {
   if (!player) return;
 
-  // Before "GO" the camera sits outside the gate showing the whole entrance.
-  // At GO it swoops forward, drives through the open entrance arch and
-  // settles behind the runner.
+  const now = performance.now();
+  const timeSec = now / 1000;
+
+  // menuBlend: 1 on the login / home / character-select / room screens
+  // (camera looks at the main gate + SUIIT), 0 while playing.
+  const inMenu = currentScreen !== 'game';
+  menuBlend = THREE.MathUtils.damp(menuBlend, inMenu ? 1 : 0, 2.2, delta);
+
+  // introBlend: 1 before "GO" (camera outside the gate), 0 once running.
   introBlend = THREE.MathUtils.damp(introBlend, raceStarted ? 0 : 1, 2.6, delta);
 
   // During the swoop the camera stays lined up with the runner's lane so it
   // flies through the same entrance arch, then eases back to the normal follow.
   const follow = 0.22 + 0.78 * Math.min(1, introBlend * 4);
 
-  const target = new THREE.Vector3(
+  _camTarget.set(
     player.position.x * follow,
-    4.4 + player.position.y * 0.12 + introBlend * INTRO_UP,
+    4.4 + player.position.y * 0.07 + introBlend * INTRO_UP,
     9.5 + introBlend * INTRO_BACK
   );
 
-  camera.position.lerp(target, 1 - Math.exp(-delta * 3.2));
+  getMenuCameraPose(timeSec, _menuTarget, _lookMenu);
+  _camTarget.lerp(_menuTarget, menuBlend);
 
-  // Subtle motion while running
+  // Slightly slower follow than before = steadier picture
+  camera.position.lerp(_camTarget, 1 - Math.exp(-delta * 2.6));
+
+  // Very subtle motion while running (was 0.025)
   if (running) {
-    camera.position.y += Math.sin(performance.now() * 0.014) * 0.025;
+    camera.position.y += Math.sin(now * 0.008) * CAMERA_BOB;
   }
 
-  // Shake after a collision
-  const now = performance.now();
+  // Short, gentle shake after a collision (was 0.35 for 350 ms)
   if (now < shakeUntil) {
-    const k = (shakeUntil - now) / 350;
-    camera.position.x += (Math.random() - 0.5) * 0.35 * k;
-    camera.position.y += (Math.random() - 0.5) * 0.35 * k;
+    const k = (shakeUntil - now) / HIT_SHAKE_MS;
+    camera.position.x += (Math.random() - 0.5) * HIT_SHAKE * k;
+    camera.position.y += (Math.random() - 0.5) * HIT_SHAKE * k;
   }
 
-  // Field of view widens with speed
+  // Field of view widens with speed (gentler than before). A little wider on
+  // portrait screens in the menu so the gate and SUIIT both fit.
+  const aspect = window.innerWidth / Math.max(1, window.innerHeight);
   const baseFov = window.innerWidth < 700 ? 68 : 62;
-  const targetFov = baseFov + (running ? (speed - START_SPEED) * 0.6 : 0);
+  const menuExtra = aspect < 1 ? 6 * menuBlend : 0;
+  const targetFov = baseFov + menuExtra + (running ? (speed - START_SPEED) * 0.3 : 0);
   camera.fov = THREE.MathUtils.damp(camera.fov, targetFov, 4, delta);
   camera.updateProjectionMatrix();
 
-  // At the start, look toward the middle of the gate so the whole gate is framed.
+  // Where the camera looks. Before GO it frames the whole gate; while
+  // running it looks down the road; in the menus it looks at gate + SUIIT.
   const lookX = THREE.MathUtils.lerp(
     player.position.x * 0.25,
     GATE_OFFSET_X * 0.8,
     introBlend
   );
 
-  camera.lookAt(
+  _lookGame.set(
     lookX,
-    1.1 + player.position.y * 0.22 + introBlend * 1.0,
+    1.1 + player.position.y * 0.12 + introBlend * 1.0,
     -7
   );
+  _lookGame.lerp(_lookMenu, menuBlend);
+
+  // Smooth the look target too, so lane changes never jerk the picture
+  _lookCur.lerp(_lookGame, 1 - Math.exp(-delta * 6));
+  camera.lookAt(_lookCur);
 
   // Keep the sky dome centred on the camera
   if (skyMesh) skyMesh.position.copy(camera.position);
@@ -2861,22 +3267,8 @@ window.addEventListener('keyup', (event) => {
   heldKeys.delete(event.key);
 });
 
-// Mobile touch controls
-function bindHoldButton(button, action) {
-  if (!button) return;
-
-  button.addEventListener('pointerdown', (event) => {
-    event.preventDefault();
-    action();
-  });
-
-  button.addEventListener('contextmenu', (event) => event.preventDefault());
-}
-
-bindHoldButton(ui.left, () => moveLane(-1));
-bindHoldButton(ui.right, () => moveLane(1));
-bindHoldButton(ui.jump, jump);
-bindHoldButton(ui.slide, slide);
+// The on-screen control buttons (left / right / jump / slide) were removed.
+// Controls: keyboard (arrows / WASD / space) and swipe on touch screens.
 
 // Swipe controls
 // (touchstart is bound on window: the renderer doesn't exist yet at this point in the file)
@@ -2909,6 +3301,9 @@ window.addEventListener('touchend', (event) => {
 // ------------------------------------------------------------
 
 function startApp() {
+  // Remove the control-button bar from the page completely
+  ui.mobile?.remove();
+
   initThree();
 
   showScreen('login');
