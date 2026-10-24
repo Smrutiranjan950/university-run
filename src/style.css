@@ -1,10 +1,10 @@
-
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Orbitron:wght@500;600;700;800;900&display=swap');
 
 :root {
   font-family: 'Inter', sans-serif;
   color: #f4f7fb;
   background: #07131c;
+  color-scheme: dark;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -19,6 +19,12 @@
   --border: rgba(255, 255, 255, 0.12);
   --radius: 18px;
   --shadow: 0 25px 90px rgba(0, 0, 0, 0.42);
+
+  /* glass look */
+  --glass-fill: linear-gradient(150deg, rgba(18, 42, 62, 0.62), rgba(7, 18, 28, 0.46));
+  --glass-border: rgba(255, 255, 255, 0.2);
+  --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 * {
@@ -73,8 +79,31 @@ input {
   min-width: 0;
 }
 
+::selection {
+  background: rgba(186, 255, 88, 0.3);
+  color: #fff;
+}
+
 .hidden {
   display: none !important;
+}
+
+/* thin, dark scrollbars on scrolling screens */
+.screen,
+.overlay-screen {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+}
+
+.screen::-webkit-scrollbar,
+.overlay-screen::-webkit-scrollbar {
+  width: 6px;
+}
+
+.screen::-webkit-scrollbar-thumb,
+.overlay-screen::-webkit-scrollbar-thumb {
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.25);
 }
 
 /* ==================== 3D GAME WORLD ==================== */
@@ -101,6 +130,7 @@ input {
   touch-action: none;
 }
 
+/* Lighter shade than before so the gate and SUIIT behind the menus stay visible */
 body::after {
   content: "";
   position: fixed;
@@ -108,8 +138,8 @@ body::after {
   z-index: 1;
   pointer-events: none;
   background:
-    linear-gradient(90deg, rgba(3, 10, 15, 0.47), transparent 75%),
-    linear-gradient(0deg, rgba(3, 10, 15, 0.4), transparent 55%);
+    linear-gradient(90deg, rgba(3, 10, 15, 0.34), transparent 70%),
+    linear-gradient(0deg, rgba(3, 10, 15, 0.28), transparent 50%);
 }
 
 /* ==================== TOP NAVIGATION ==================== */
@@ -128,10 +158,10 @@ body::after {
   justify-content: space-between;
   gap: 16px;
 
-  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
-  background: rgba(5, 15, 23, 0.83);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  background: linear-gradient(180deg, rgba(6, 18, 28, 0.78), rgba(6, 18, 28, 0.6));
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
 }
 
 .brand {
@@ -177,7 +207,7 @@ body::after {
   display: block;
   margin-top: 5px;
   color: var(--muted);
-  font-size: 8px;
+  font-size: 9px;
   letter-spacing: 1.2px;
 }
 
@@ -240,8 +270,8 @@ body::after {
 
   background: linear-gradient(
     90deg,
-    rgba(4, 12, 18, 0.25),
-    rgba(4, 12, 18, 0.01) 85%
+    rgba(4, 12, 18, 0.2),
+    rgba(4, 12, 18, 0) 85%
   );
 }
 
@@ -263,19 +293,36 @@ body::after {
   justify-content: center;
 }
 
-/* ==================== PANELS ==================== */
+/* ==================== PANELS (glass) ==================== */
 
 .panel {
   width: min(100%, 480px);
   padding: clamp(24px, 3.5vw, 38px);
 
-  border: 1px solid var(--border);
+  border: 1px solid var(--glass-border);
   border-radius: 22px;
-  background: var(--panel);
-  box-shadow: var(--shadow);
+  background: var(--glass-fill);
+  box-shadow: var(--shadow), var(--glass-highlight);
 
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(22px) saturate(150%);
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
+}
+
+/* every screen eases in when it is shown */
+.screen:not(.hidden) .panel,
+.overlay-screen:not(.hidden) .panel {
+  animation: panel-in 0.55s var(--ease-out) both;
+}
+
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .login-panel {
@@ -362,6 +409,7 @@ h2 {
 h1 span,
 h2 span {
   color: var(--green);
+  text-shadow: 0 0 28px rgba(186, 255, 88, 0.25);
 }
 
 h3 {
@@ -395,7 +443,7 @@ p {
 
 .hero-description {
   max-width: 350px;
-  color: #b2c0cc;
+  color: #c3d0db;
   font-size: 13px;
   line-height: 1.8;
 }
@@ -420,9 +468,9 @@ p {
 .panel-footnote {
   margin: 24px 0 0;
   padding-top: 15px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-  color: #8293a3;
-  font-size: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  color: #93a4b3;
+  font-size: 9px;
   font-weight: 700;
   letter-spacing: 2px;
   text-align: center;
@@ -435,6 +483,7 @@ p {
   color: #d3e0e9;
   font-size: 9px;
   letter-spacing: 1px;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
 }
 
 .version-label span {
@@ -457,22 +506,24 @@ input {
   min-height: 46px;
   padding: 13px 14px;
 
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 11px;
-  background: rgba(2, 9, 14, 0.78);
+  background: rgba(255, 255, 255, 0.07);
   color: white;
   outline: none;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.25);
 
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
 }
 
 input:focus {
   border-color: var(--green);
-  box-shadow: 0 0 0 3px rgba(186, 255, 88, 0.08);
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 0 0 3px rgba(186, 255, 88, 0.1);
 }
 
 input::placeholder {
-  color: #667889;
+  color: #7d8fa0;
 }
 
 #login-form > .primary-button {
@@ -485,6 +536,9 @@ input::placeholder {
 .primary-button,
 .secondary-button,
 .small-button {
+  position: relative;
+  overflow: hidden;
+
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -504,37 +558,63 @@ input::placeholder {
   transition:
     background 0.2s,
     border-color 0.2s,
-    transform 0.2s,
+    transform 0.2s var(--ease-out),
     box-shadow 0.2s;
 }
 
+.primary-button:active:not(:disabled),
+.secondary-button:active:not(:disabled),
+.small-button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
 .primary-button {
-  background: var(--green);
+  background: linear-gradient(180deg, #c9ff72, var(--green));
   color: #11190b;
+  box-shadow: 0 6px 20px rgba(186, 255, 88, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+/* light sweep across the main button on hover */
+.primary-button::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(110deg, transparent 35%, rgba(255, 255, 255, 0.5) 50%, transparent 65%);
+  transform: translateX(-120%);
+  transition: transform 0.7s ease;
+  pointer-events: none;
+}
+
+.primary-button:hover:not(:disabled)::after {
+  transform: translateX(120%);
 }
 
 .primary-button:hover:not(:disabled) {
-  background: var(--green-light);
-  transform: translateY(-1px);
-  box-shadow: 0 8px 24px rgba(186, 255, 88, 0.12);
+  background: linear-gradient(180deg, #ddffa6, var(--green-light));
+  transform: translateY(-2px);
+  box-shadow: 0 12px 30px rgba(186, 255, 88, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.6);
 }
 
 .secondary-button {
-  border-color: rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.045);
+  border-color: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.07);
   color: white;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
 }
 
 .secondary-button:hover:not(:disabled) {
-  border-color: rgba(186, 255, 88, 0.65);
-  background: rgba(186, 255, 88, 0.06);
+  border-color: rgba(186, 255, 88, 0.7);
+  background: rgba(186, 255, 88, 0.1);
+  transform: translateY(-1px);
 }
 
 .small-button {
   min-height: 34px;
   padding: 8px 12px;
   border-color: var(--border);
-  background: rgba(255, 255, 255, 0.045);
+  background: rgba(255, 255, 255, 0.06);
   color: white;
   font-size: 9px;
 }
@@ -550,10 +630,12 @@ input::placeholder {
   color: var(--muted);
   font-size: 10px;
   font-weight: 700;
+  transition: color 0.2s, transform 0.2s;
 }
 
 .back-button:hover {
   color: var(--green);
+  transform: translateX(-2px);
 }
 
 /* ==================== FEATURE CHIPS ==================== */
@@ -567,11 +649,11 @@ input::placeholder {
 
 .feature-chips span {
   padding: 7px 9px;
-  border: 1px solid rgba(186, 255, 88, 0.16);
+  border: 1px solid rgba(186, 255, 88, 0.22);
   border-radius: 7px;
-  background: rgba(186, 255, 88, 0.035);
-  color: #d2e3d0;
-  font-size: 8px;
+  background: rgba(186, 255, 88, 0.06);
+  color: #dcebd9;
+  font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.5px;
 }
@@ -607,6 +689,8 @@ input::placeholder {
   margin: 0;
 }
 
+/* ---------- Character picker: transparent glass cards ---------- */
+
 .character-picker {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -616,29 +700,100 @@ input::placeholder {
 
 .character-option {
   position: relative;
+  isolation: isolate;          /* keeps the light streak behind the text */
+  overflow: hidden;
+
   display: flex;
   align-items: center;
   gap: 10px;
   min-width: 0;
   padding: 12px 10px;
 
-  border: 1px solid var(--border);
-  border-radius: 13px;
-  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 16px;
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.22),
+    rgba(255, 255, 255, 0.05)
+  );
   color: white;
   text-align: left;
 
-  transition: border-color 0.2s, background 0.2s, transform 0.2s;
+  box-shadow:
+    0 10px 28px rgba(0, 10, 25, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    inset 0 -10px 18px rgba(255, 255, 255, 0.04);
+
+  -webkit-backdrop-filter: blur(16px) saturate(170%);
+  backdrop-filter: blur(16px) saturate(170%);
+
+  transition:
+    transform 0.35s var(--ease-out),
+    border-color 0.3s,
+    background 0.3s,
+    box-shadow 0.35s;
+}
+
+/* fluid light streak that glides across the glass */
+.character-option::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: -40% -70%;
+  background: linear-gradient(
+    115deg,
+    transparent 40%,
+    rgba(255, 255, 255, 0.34) 50%,
+    transparent 60%
+  );
+  transform: translateX(-60%);
+  transition: transform 0.9s ease;
+  pointer-events: none;
 }
 
 .character-option:hover {
-  transform: translateY(-1px);
-  border-color: rgba(186, 255, 88, 0.55);
+  transform: translateY(-4px) scale(1.025);
+  border-color: rgba(186, 255, 88, 0.7);
+  box-shadow:
+    0 16px 40px rgba(0, 10, 25, 0.36),
+    inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.character-option:hover::before {
+  transform: translateX(60%);
+}
+
+.character-option:active {
+  transform: translateY(-1px) scale(0.99);
 }
 
 .character-option.selected {
   border-color: var(--green);
-  background: rgba(186, 255, 88, 0.075);
+  background: linear-gradient(
+    135deg,
+    rgba(186, 255, 88, 0.3),
+    rgba(255, 255, 255, 0.07)
+  );
+  box-shadow:
+    0 0 0 2px rgba(186, 255, 88, 0.35),
+    0 14px 38px rgba(186, 255, 88, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+/* the selected card keeps a slow, calm sheen running */
+.character-option.selected::before {
+  animation: glass-sheen 4.2s ease-in-out infinite;
+}
+
+@keyframes glass-sheen {
+  0%,
+  35% {
+    transform: translateX(-60%);
+  }
+  75%,
+  100% {
+    transform: translateX(60%);
+  }
 }
 
 .character-preview {
@@ -652,17 +807,18 @@ input::placeholder {
   font-family: 'Orbitron', sans-serif;
   font-size: 19px;
   font-weight: 900;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
 }
 
 .smruti-preview {
-  border: 1px solid rgba(112, 217, 255, 0.35);
-  background: linear-gradient(145deg, #163f60, #0d243b);
+  border: 1px solid rgba(112, 217, 255, 0.5);
+  background: linear-gradient(145deg, rgba(40, 120, 175, 0.75), rgba(13, 36, 59, 0.6));
   color: var(--blue);
 }
 
 .swastik-preview {
-  border: 1px solid rgba(255, 173, 100, 0.35);
-  background: linear-gradient(145deg, #6d361c, #301c18);
+  border: 1px solid rgba(255, 173, 100, 0.5);
+  background: linear-gradient(145deg, rgba(190, 95, 40, 0.75), rgba(48, 28, 24, 0.6));
   color: #ffb36b;
 }
 
@@ -683,8 +839,8 @@ input::placeholder {
 
 .character-details small {
   margin-top: 5px;
-  color: var(--muted);
-  font-size: 8px;
+  color: #b8c7d3;
+  font-size: 9px;
   letter-spacing: 0.5px;
 }
 
@@ -695,10 +851,22 @@ input::placeholder {
   right: 7px;
   color: var(--green);
   font-size: 11px;
+  text-shadow: 0 0 10px rgba(186, 255, 88, 0.6);
 }
 
 .character-option.selected .character-check {
   display: block;
+}
+
+/* browsers without backdrop-filter: a bit more solid so text stays readable */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .panel {
+    background: var(--panel);
+  }
+
+  .character-option {
+    background: rgba(20, 40, 80, 0.6);
+  }
 }
 
 .game-mode-button {
@@ -748,6 +916,11 @@ input::placeholder {
 .game-mode-button .mode-arrow {
   margin-left: auto;
   font-size: 17px;
+  transition: transform 0.25s var(--ease-out);
+}
+
+.game-mode-button:hover:not(:disabled) .mode-arrow {
+  transform: translateX(4px);
 }
 
 #multiplayer-button .mode-icon {
@@ -768,9 +941,9 @@ input::placeholder {
   gap: 6px;
   padding: 7px 9px;
 
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 7px;
-  background: rgba(255, 255, 255, 0.025);
+  background: rgba(255, 255, 255, 0.06);
   color: white;
   font-size: 9px;
   font-weight: 700;
@@ -778,7 +951,7 @@ input::placeholder {
 
 .controls-hint small {
   color: var(--muted);
-  font-size: 8px;
+  font-size: 9px;
 }
 
 /* ==================== MULTIPLAYER ==================== */
@@ -798,9 +971,10 @@ input::placeholder {
 .room-action-card {
   padding: 18px;
   margin: 20px 0;
-  border: 1px solid var(--border);
+  border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.025);
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
 }
 
 .room-action-icon {
@@ -832,8 +1006,8 @@ input::placeholder {
   align-items: center;
   gap: 10px;
   margin: 23px 0;
-  color: #8293a3;
-  font-size: 8px;
+  color: #93a4b3;
+  font-size: 9px;
   font-weight: 800;
   letter-spacing: 1px;
 }
@@ -871,9 +1045,9 @@ input::placeholder {
 
 .lobby-code-card {
   padding: 15px;
-  border: 1px solid rgba(186, 255, 88, 0.2);
+  border: 1px solid rgba(186, 255, 88, 0.28);
   border-radius: 13px;
-  background: rgba(186, 255, 88, 0.04);
+  background: rgba(186, 255, 88, 0.07);
 }
 
 .lobby-code-card > p {
@@ -909,9 +1083,9 @@ input::placeholder {
 
 #player-list li {
   padding: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 9px;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.05);
   font-size: 12px;
 }
 
@@ -943,10 +1117,12 @@ input::placeholder {
   gap: 10px;
   padding: 9px 12px;
 
-  border: 1px solid var(--border);
+  border: 1px solid var(--glass-border);
   border-radius: 12px;
-  background: rgba(6, 17, 26, 0.87);
-  backdrop-filter: blur(12px);
+  background: rgba(6, 17, 26, 0.7);
+  box-shadow: var(--glass-highlight);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
 }
 
 .hud-brand-icon {
@@ -976,7 +1152,7 @@ input::placeholder {
 .hud-brand small {
   margin-top: 4px;
   color: var(--muted);
-  font-size: 7px;
+  font-size: 8px;
   letter-spacing: 0.8px;
 }
 
@@ -990,12 +1166,24 @@ input::placeholder {
   margin-left: auto;
   padding: 0 12px;
 
-  border: 1px solid var(--border);
+  border: 1px solid var(--glass-border);
   border-radius: 10px;
-  background: rgba(6, 17, 26, 0.88);
+  background: rgba(6, 17, 26, 0.7);
   color: var(--green);
   font-size: 15px;
   pointer-events: auto;
+  box-shadow: var(--glass-highlight);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  transition: transform 0.2s var(--ease-out), border-color 0.2s;
+}
+
+.pause-button:hover {
+  border-color: var(--green);
+}
+
+.pause-button:active {
+  transform: scale(0.95);
 }
 
 .pause-button span {
@@ -1018,10 +1206,12 @@ input::placeholder {
 .hud-stat {
   min-width: 105px;
   padding: 10px 13px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--glass-border);
   border-radius: 11px;
-  background: rgba(6, 17, 26, 0.88);
-  backdrop-filter: blur(12px);
+  background: rgba(6, 17, 26, 0.7);
+  box-shadow: var(--glass-highlight);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
 }
 
 .hud-stat > small {
@@ -1036,6 +1226,7 @@ input::placeholder {
   margin-top: 5px;
   font-family: 'Orbitron', sans-serif;
   font-size: 16px;
+  font-variant-numeric: tabular-nums;   /* numbers do not jiggle while counting */
 }
 
 .hud-stat strong small {
@@ -1047,6 +1238,7 @@ input::placeholder {
 .coin-stat .coin-symbol {
   color: #ffd76a;
   font-size: 12px;
+  text-shadow: 0 0 10px rgba(255, 215, 106, 0.6);
 }
 
 .hud-location {
@@ -1058,10 +1250,12 @@ input::placeholder {
 
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: rgba(6, 17, 26, 0.78);
+  background: rgba(6, 17, 26, 0.62);
   color: #e5edf2;
   font-size: 8px;
   letter-spacing: 1px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 
 .location-dot {
@@ -1083,9 +1277,14 @@ input::placeholder {
   padding: 20px;
   overflow-y: auto;
 
-  background: rgba(2, 8, 13, 0.76);
-  backdrop-filter: blur(7px);
-  -webkit-backdrop-filter: blur(7px);
+  background: rgba(2, 8, 13, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* pause / results cards stay a little more solid for readability */
+.overlay-screen .panel {
+  background: linear-gradient(150deg, rgba(14, 34, 50, 0.84), rgba(7, 18, 28, 0.78));
 }
 
 .compact-panel {
@@ -1123,11 +1322,15 @@ input::placeholder {
 .results-medal {
   border-radius: 50%;
   font-size: 29px;
+  box-shadow: 0 0 34px rgba(186, 255, 88, 0.2);
 }
 
 #countdown-screen {
   z-index: 7;
   pointer-events: none;
+  background: rgba(2, 8, 13, 0.18);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .countdown-content {
@@ -1139,6 +1342,7 @@ input::placeholder {
   font-size: 10px;
   font-weight: 800;
   letter-spacing: 3px;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
 }
 
 #countdown-number {
@@ -1147,7 +1351,7 @@ input::placeholder {
   font-size: clamp(100px, 20vw, 190px);
   font-weight: 900;
   line-height: 1.15;
-  text-shadow: 0 0 50px rgba(186, 255, 88, 0.4);
+  text-shadow: 0 0 50px rgba(186, 255, 88, 0.4), 0 6px 24px rgba(0, 0, 0, 0.35);
   animation: countdown-pop 0.55s ease both;
 }
 
@@ -1171,9 +1375,10 @@ input::placeholder {
 
 .results-grid > div {
   padding: 17px 10px;
-  border: 1px solid var(--border);
+  border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
 }
 
 .results-grid span {
@@ -1189,6 +1394,7 @@ input::placeholder {
   color: var(--green);
   font-family: 'Orbitron', sans-serif;
   font-size: 19px;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ==================== TOAST ==================== */
@@ -1202,64 +1408,34 @@ input::placeholder {
   padding: 12px 17px;
   transform: translateX(-50%);
 
-  border: 1px solid var(--border);
+  border: 1px solid var(--glass-border);
   border-radius: 11px;
-  background: rgba(8, 20, 29, 0.96);
+  background: rgba(8, 20, 29, 0.82);
   color: white;
-  box-shadow: 0 12px 35px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 12px 35px rgba(0, 0, 0, 0.3), var(--glass-highlight);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
 
   font-size: 11px;
   line-height: 1.5;
   text-align: center;
+
+  animation: toast-in 0.35s var(--ease-out) both;
 }
 
-/* ==================== MOBILE CONTROLS ==================== */
-
-#mobile-controls {
-  position: fixed;
-  z-index: 4;
-  right: 0;
-  bottom: max(20px, env(safe-area-inset-bottom));
-  left: 0;
-
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-
-  padding: 0 22px;
-  pointer-events: none;
-  user-select: none;
-  -webkit-user-select: none;
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -10px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
 }
 
-#mobile-controls button {
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
-
-  width: 54px;
-  height: 54px;
-  padding: 0;
-
-  border: 1px solid rgba(255, 255, 255, 0.24);
-  border-radius: 17px;
-  background: rgba(8, 20, 29, 0.9);
-  color: var(--green);
-
-  font-size: 19px;
-  font-weight: 900;
-
-  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.25);
-  touch-action: manipulation;
-  pointer-events: auto;
-}
-
-#mobile-controls button:active {
-  transform: scale(0.94);
-  border-color: var(--green);
-  background: rgba(186, 255, 88, 0.15);
-}
+/* The on-screen control buttons (#mobile-controls) were removed from the game.
+   Controls are keyboard and swipe, so their old styles are gone. */
 
 /* ==================== RESPONSIVE TABLET ==================== */
 
@@ -1307,7 +1483,7 @@ input::placeholder {
 
   .brand small {
     max-width: 175px;
-    font-size: 6px;
+    font-size: 7px;
     letter-spacing: 0.6px;
   }
 
@@ -1326,7 +1502,7 @@ input::placeholder {
   }
 
   #change-name-button {
-    min-height: 31px;
+    min-height: 34px;
     padding: 7px 8px;
     font-size: 8px;
     letter-spacing: 0;
@@ -1395,7 +1571,7 @@ input::placeholder {
 
   .feature-chips span {
     padding: 6px 7px;
-    font-size: 7px;
+    font-size: 8px;
   }
 
   .character-picker {
@@ -1418,7 +1594,7 @@ input::placeholder {
   }
 
   .character-details small {
-    font-size: 7px;
+    font-size: 8px;
   }
 
   .game-mode-button {
@@ -1480,12 +1656,12 @@ input::placeholder {
   }
 
   .hud-brand small {
-    font-size: 6px;
+    font-size: 7px;
   }
 
   .pause-button {
     min-width: 39px;
-    height: 36px;
+    height: 38px;
     padding: 0 9px;
   }
 
@@ -1504,7 +1680,7 @@ input::placeholder {
   }
 
   .hud-stat > small {
-    font-size: 7px;
+    font-size: 8px;
   }
 
   .hud-stat > strong {
@@ -1513,20 +1689,7 @@ input::placeholder {
 
   .hud-location {
     margin-top: 7px;
-    font-size: 7px;
-  }
-
-  #mobile-controls {
-    bottom: max(15px, env(safe-area-inset-bottom));
-    padding: 0 12px;
-    gap: 7px;
-  }
-
-  #mobile-controls button {
-    width: 46px;
-    height: 46px;
-    border-radius: 14px;
-    font-size: 16px;
+    font-size: 8px;
   }
 
   .compact-panel {
@@ -1550,7 +1713,7 @@ input::placeholder {
   .version-label {
     right: 12px;
     bottom: 8px;
-    font-size: 7px;
+    font-size: 8px;
   }
 }
 
@@ -1559,7 +1722,7 @@ input::placeholder {
 @media (max-width: 370px) {
   .brand small {
     max-width: 130px;
-    font-size: 5px;
+    font-size: 6px;
   }
 
   .connection-pill {
@@ -1573,15 +1736,6 @@ input::placeholder {
 
   .character-details strong {
     font-size: 8px;
-  }
-
-  #mobile-controls {
-    padding: 0 8px;
-  }
-
-  #mobile-controls button {
-    width: 42px;
-    height: 42px;
   }
 }
 
@@ -1636,15 +1790,6 @@ input::placeholder {
   h2 {
     margin: 7px 0;
     font-size: 27px;
-  }
-
-  #mobile-controls {
-    bottom: 7px;
-  }
-
-  #mobile-controls button {
-    width: 40px;
-    height: 40px;
   }
 }
 

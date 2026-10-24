@@ -32,17 +32,39 @@ const GATE_OFFSET_X = LANES[START_LANE] - START_SIDE * ARCH_CENTER_X;
 const ROAD_WIDTH = 10;
 const SEGMENT_LENGTH = 48;
 const SEGMENT_COUNT = 7;
-const START_SPEED = 17;
-const MAX_DISTANCE = 1500;
+
+// ---- Speed (slower than the original 17 / 27 / 0.0024) ----
+const START_SPEED = 15;
+const MAX_SPEED = 22;
+const SPEED_RAMP = 0.003;      // speed gained per distance unit
+const SCORE_RATE = 1.7;        // score points per world unit travelled
+const MAX_DISTANCE = 1000000;
 const GRAVITY = 24;
 
 // ---- Campus layout (world units) ----
-// The main gate stands BEHIND the runner's start position, so the runner
-// begins right at the gate entrance and runs into the campus. Nothing
-// ever scrolls through the character.
-const PLAYER_START_Z = 2;
+// The runner now starts OUTSIDE the main gate, on the approach road, and
+// runs towards the gate and through its right arch. The gate scrolls
+// towards the runner and away behind them.
 const GATE_Z = 4.5;
+const PLAYER_START_Z = 34;     // run-up before the gate (gate is at GATE_Z)
 const SEGMENT_WRAP_Z = SEGMENT_LENGTH * 2;
+
+// Obstacles spawn this far ahead of the runner and are spaced by distance,
+// so the slower speed doesn't pack them tighter.
+const SPAWN_Z = PLAYER_START_Z - 107;
+const OBSTACLE_SPACING = 30;
+const OBSTACLE_SPACING_MIN = 22;
+const INITIAL_OBSTACLE_OFFSET = 22;   // first obstacles sit this far beyond the gate (bigger = more run-up)
+const COIN_SPACING = 60;              // world units between single bonus coins
+const BEST_KEY = 'sambalpurCampusRunBest';
+
+// Camera while running
+const CAM_BACK = 7.5;           // distance behind the runner
+const GATE_CAM_HEIGHT = 3.2;    // camera dips under the arch beam (beam bottom = 3.9)
+
+// Lane lock around the gate so the runner always goes through the right arch
+const GATE_LOCK_AHEAD = 9;
+const GATE_LOCK_BEHIND = 2.5;
 
 const FRONT_X = 12.5;   // distance from road centre to every building facade
 const WALL_X = 23.8;    // campus boundary wall (lines up with the gate's pink wall)
@@ -73,9 +95,9 @@ const INTRO_UP = 1.0;
 const MENU_LOOK = new THREE.Vector3(14, 4, 0);
 
 // Camera shake (kept very small so the map stays steady)
-const CAMERA_BOB = 0.004;     // running bob amplitude (was 0.025)
-const HIT_SHAKE = 0.07;       // collision shake amplitude (was 0.35)
-const HIT_SHAKE_MS = 220;     // collision shake length (was 350)
+const CAMERA_BOB = 0.004;     // running bob amplitude
+const HIT_SHAKE = 0.07;       // collision shake amplitude
+const HIT_SHAKE_MS = 220;     // collision shake length
 
 const COLORS = {
   sky: 0x9dd7ec,
@@ -227,6 +249,74 @@ function random(min, max) {
 
 function choose(array) {
   return array[Math.floor(Math.random() * array.length)];
+}
+
+// ---- Seeded track generator -------------------------------------------
+// In multiplayer both players derive the same seed from the room code, so
+// they get the same sequence of obstacle waves and coins. Solo uses
+// Math.random. (Decorations stay random: they never affect gameplay.)
+let trackRng = Math.random;
+
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function seedFromString(text) {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function resetTrackRng() {
+  trackRng = gameMode === 'multi' && roomCode
+    ? mulberry32(seedFromString(roomCode))
+    : Math.random;
+}
+
+function trackRandom(min, max) {
+  return min + trackRng() * (max - min);
+}
+
+// ---- Best score (saved in the browser) --------------------------------
+function loadBest() {
+  try {
+    return Number(localStorage.getItem(BEST_KEY)) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function saveBest(value) {
+  try {
+    localStorage.setItem(BEST_KEY, String(value));
+  } catch {
+    // storage unavailable (private mode etc.): ignore
+  }
+}
+
+function showBestLine(text) {
+  let el = $('best-score');
+
+  if (!el) {
+    el = document.createElement('p');
+    el.id = 'best-score';
+    el.style.cssText = 'margin:8px 0 0;font-weight:700;color:#ffca45;text-align:center;';
+
+    const anchor = ui.finalCoins?.parentElement;
+    if (anchor?.parentElement) anchor.insertAdjacentElement('afterend', el);
+    else ui.over?.appendChild(el);
+  }
+
+  el.textContent = text;
 }
 
 function makeMaterial(color, roughness = 0.85, extra = {}) {
@@ -480,8 +570,8 @@ function getMenuCameraPose(timeSec, outPos, outLook) {
 function initThree() {
   scene = new THREE.Scene();
 
-  // Near plane 0.5 (was 0.1): much better depth precision, so the ground
-  // and road no longer flicker/shimmer in the distance.
+  // Near plane 0.5: better depth precision, so the ground and road
+  // no longer flicker/shimmer in the distance.
   camera = new THREE.PerspectiveCamera(
     62,
     window.innerWidth / window.innerHeight,
@@ -569,7 +659,14 @@ function setupRealisticRendering() {
   scene.add(new THREE.HemisphereLight(0xcfe9ff, 0x4a6a3c, 0.9));
 
   const sun = new THREE.DirectionalLight(0xfff0d0, 3.0);
-  sun.position.set(-24, 42, 18);
+
+  // The shadow box follows the runner's start position (the runner now
+  // starts well in front of the gate).
+  const SHADOW_CENTER_Z = PLAYER_START_Z - 2;
+  sun.position.set(-24, 42, 18 + SHADOW_CENTER_Z);
+  sun.target.position.set(0, 0, SHADOW_CENTER_Z);
+  scene.add(sun.target);
+
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
   sun.shadow.camera.left = -35;
@@ -592,7 +689,7 @@ function createDust() {
   for (let i = 0; i < N; i++) {
     pos[i * 3] = random(-12, 12);
     pos[i * 3 + 1] = random(0.3, 7);
-    pos[i * 3 + 2] = random(-90, 10);
+    pos[i * 3 + 2] = random(PLAYER_START_Z - 100, PLAYER_START_Z + 8);
   }
 
   const geo = new THREE.BufferGeometry();
@@ -620,8 +717,8 @@ function updateDust(delta) {
   for (let i = 0; i < a.count; i++) {
     let z = a.getZ(i) + speed * delta * 0.9;
 
-    if (z > 12) {
-      z = -90;
+    if (z > PLAYER_START_Z + 10) {
+      z = PLAYER_START_Z - 90;
       a.setX(i, random(-12, 12));
       a.setY(i, random(0.3, 7));
     }
@@ -865,7 +962,8 @@ function animateRunner(model, time, active = true) {
   u.lastT = time;
   const ease = 1 - Math.exp(-dt * 22);
 
-  const cadence = 9 + Math.max(0, speed - START_SPEED) * 0.3;
+  // Lower cadence to match the slower run speed (no foot sliding)
+  const cadence = 8 + Math.max(0, speed - START_SPEED) * 0.33;
   const p = time * cadence + u.phaseOffset;
 
   // hip/shoulder = forward swing, knee/elbow = bend
@@ -957,9 +1055,8 @@ function createWorld() {
     { castShadow: false }
   );
 
-  // Repeating road segments. Segment 0 is the plaza OUTSIDE the gate and also
-  // gives the runner road under their feet at the start (the old layout had
-  // no road behind the start position). The rest are campus segments.
+  // Repeating road segments. Segment 0 is the plaza OUTSIDE the gate; the
+  // runner now starts on it. The rest are campus segments.
   for (let i = 0; i < SEGMENT_COUNT; i++) {
     world.push(
       createCampusSegment(SEGMENT_LENGTH - i * SEGMENT_LENGTH, { plaza: i === 0 })
@@ -1092,7 +1189,6 @@ function createCampusSegment(z, { plaza = false } = {}) {
     addBox(group, [side * 5.05, 0.04, -SEGMENT_LENGTH / 2], [0.12, 0.06, SEGMENT_LENGTH], materials.white, { castShadow: false });
 
     // Maintained lawn between the sidewalk and the boundary wall
-    // (raised slightly from -0.115 to -0.1 to stop depth flicker on the grass)
     addMesh(
       group,
       lawnGeo,
@@ -1481,8 +1577,9 @@ function createTextTexture(text, foreground = '#ffffff', background = '#174e3a')
 // with yellow-black iron gates and stone pillars.
 //
 // The gate is shifted sideways so that ONE of the two entrance arches sits on
-// the runner's start lane (START_LANE). It stands just BEHIND the start line,
-// so the run begins inside the entrance and the gate scrolls away behind.
+// the runner's start lane (START_LANE). The runner starts on the road OUTSIDE
+// the gate, runs towards it and through that arch; the gate then scrolls away
+// behind them.
 
 function buildMainGate() {
   const gate = new THREE.Group();
@@ -1920,8 +2017,8 @@ function buildMainGate() {
   box(dark, ledX, 3.85, 1.2, 2.25, 1.75, 0.2);
   plane(ledTex, 2.05, 1.55, ledX, 3.85, 1.31, { transparent: false, alphaTest: 0 });
 
-  // The gate stands just behind the start line; the runner begins right at
-  // the entrance and runs away from it into the campus.
+  // The gate stands ahead of the runner's start; it scrolls towards the
+  // runner, who runs through the right arch, and then it scrolls away behind.
   gate.position.set(OX, 0, GATE_Z);
   scene.add(gate);
   decorations.push(gate);
@@ -2397,6 +2494,42 @@ function createCrate(laneIndex, z) {
   return item;
 }
 
+// High bar on two posts: you must SLIDE under it. Jumping does not help.
+function createOverhead(laneIndex, z) {
+  const group = new THREE.Group();
+  group.position.set(LANES[laneIndex], 0, z);
+
+  const postMat = materials.black;
+  for (const x of [-0.85, 0.85]) {
+    addBox(group, [x, 0.9, 0], [0.14, 1.8, 0.14], postMat);
+  }
+
+  // Bar bottom sits at y = 1.3, so a standing runner hits it
+  addBox(group, [0, 1.55, 0], [1.9, 0.5, 0.3], materials.red);
+  for (let x = -0.6; x <= 0.61; x += 0.6) {
+    addBox(
+      group,
+      [x, 1.55, 0.16],
+      [0.3, 0.46, 0.03],
+      materials.barrierWhite,
+      { rotation: [0, 0, -0.3] }
+    );
+  }
+
+  scene.add(group);
+
+  const item = {
+    group,
+    lane: laneIndex,
+    z,
+    type: 'overhead',
+    passed: false
+  };
+
+  obstacles.push(item);
+  return item;
+}
+
 function createCoin(laneIndex, z, y = 1.25) {
   const group = new THREE.Group();
   group.position.set(LANES[laneIndex], y, z);
@@ -2437,26 +2570,43 @@ function createCoin(laneIndex, z, y = 1.25) {
   });
 }
 
-function spawnObstacleWave() {
-  const first = Math.floor(Math.random() * 3);
-  const pattern = Math.random();
+// Regular waves spawn at SPAWN_Z (107 units ahead of the runner's start).
+// baseZ lets the same patterns be placed anywhere on the road.
+function spawnObstacleWave(baseZ = SPAWN_Z) {
+  const first = Math.floor(trackRng() * 3);
+  const pattern = trackRng();
 
-  if (pattern < 0.28) {
-    createBarrier(first, -105);
-    createCoin((first + 1) % 3, -104, 1.2);
-  } else if (pattern < 0.55) {
-    createCrate(first, -105);
-    createCoin((first + 2) % 3, -104, 1.2);
+  if (pattern < 0.22) {
+    // low barrier: jump over it
+    createBarrier(first, baseZ);
+    createCoin((first + 1) % 3, baseZ + 1, 1.2);
+  } else if (pattern < 0.42) {
+    // crate: jump over it
+    createCrate(first, baseZ);
+    createCoin((first + 2) % 3, baseZ + 1, 1.2);
+  } else if (pattern < 0.58) {
+    // overhead bar: slide under it
+    createOverhead(first, baseZ);
+    createCoin((first + 1) % 3, baseZ + 1, 1.2);
   } else if (pattern < 0.77) {
     const second = (first + 1) % 3;
-    createBarrier(first, -105);
-    createBarrier(second, -105);
-    createCoin((first + 2) % 3, -104, 1.2);
+    createBarrier(first, baseZ);
+    createBarrier(second, baseZ);
+    createCoin((first + 2) % 3, baseZ + 1, 1.2);
   } else {
     for (let i = 0; i < 6; i++) {
-      createCoin(first, -105 - i * 2.6, 1.2 + Math.sin(i * 0.6) * 0.2);
+      createCoin(first, baseZ - i * 2.6, 1.2 + Math.sin(i * 0.6) * 0.2);
     }
-    createBarrier((first + 1) % 3, -119);
+    createBarrier((first + 1) % 3, baseZ - 14);
+  }
+}
+
+// Obstacles already on the road at GO, just beyond the gate, so there is
+// something to dodge right after passing through it.
+function spawnInitialObstacles() {
+  const firstZ = GATE_Z - INITIAL_OBSTACLE_OFFSET;
+  for (let z = firstZ; z >= SPAWN_Z + 15; z -= OBSTACLE_SPACING) {
+    spawnObstacleWave(z);
   }
 }
 
@@ -2479,11 +2629,14 @@ function resetRace() {
   distance = 0;
   coinCount = 0;
   elapsed = 0;
-  spawnTimer = 0;
+  spawnTimer = OBSTACLE_SPACING;   // first wave spawns right at GO
   coinTimer = 0;
   hitCount = 0;
   invulnerableUntil = 0;
   shakeUntil = 0;
+
+  // Same seed for both players in a multiplayer room
+  resetTrackRng();
 
   for (const item of obstacles) { scene.remove(item.group); disposeObject(item.group); }
   for (const item of coins) { scene.remove(item.group); disposeObject(item.group); }
@@ -2510,9 +2663,9 @@ function resetRace() {
     remotePlayer = null;
   }
 
-  // The camera is NOT teleported here any more. It glides on its own:
-  // menu view -> pulled-back gate view during the countdown -> behind the
-  // runner at "GO".
+  // The camera is NOT teleported here. It glides on its own:
+  // menu view -> pulled-back view behind the runner during the countdown ->
+  // behind the runner at "GO" -> under the gate arch as the runner passes it.
   introBlend = 1;
 
   updateHUD();
@@ -2540,7 +2693,11 @@ function startCountdown() {
       running = true;
       raceStarted = true;
       clock.getDelta();
-      showToast('GO! Collect coins and avoid obstacles.');
+      spawnInitialObstacles();
+      const best = loadBest();
+      showToast(best > 0
+        ? `GO! Best: ${best}. Jump low blocks, slide under high bars.`
+        : 'GO! Jump low blocks, slide under high bars.');
       return;
     }
 
@@ -2577,6 +2734,15 @@ function finishRace() {
 
   ui.finalDistance && (ui.finalDistance.textContent = String(Math.floor(distance)));
   ui.finalCoins && (ui.finalCoins.textContent = String(coinCount));
+
+  const finalScore = Math.floor(distance);
+  const previousBest = loadBest();
+  if (finalScore > previousBest) {
+    saveBest(finalScore);
+    showBestLine(`New best: ${finalScore}!`);
+  } else {
+    showBestLine(`Best: ${previousBest}`);
+  }
 
   ui.hud?.classList.add('hidden');
   ui.over?.classList.remove('hidden');
@@ -2630,8 +2796,23 @@ function updateHUD() {
 // MOVEMENT AND COLLISIONS
 // ------------------------------------------------------------
 
+function getGate() {
+  return decorations.find((d) => d.userData?.isGate) || null;
+}
+
+// True while the runner is approaching / passing through the gate.
+// The runner is locked to the start lane so they always use the right arch.
+function isInGateZone() {
+  const gate = getGate();
+  if (!gate || !player) return false;
+
+  const d = player.position.z - gate.position.z; // > 0 = gate still ahead
+  return d < GATE_LOCK_AHEAD && d > -GATE_LOCK_BEHIND;
+}
+
 function moveLane(direction) {
   if (!running || paused || raceFinished) return;
+  if (isInGateZone()) return;
 
   lane = THREE.MathUtils.clamp(lane + direction, 0, 2);
 }
@@ -2652,6 +2833,8 @@ function slide() {
 
 function updatePlayer(delta, time) {
   if (!player) return;
+
+  if (isInGateZone()) lane = START_LANE;
 
   const targetX = LANES[lane];
   player.position.x = THREE.MathUtils.damp(
@@ -2742,8 +2925,11 @@ function updateWorld(delta) {
     item.group.position.y = item.baseY + Math.sin(elapsed * 3 + item.z * 0.4) * 0.07;
   }
 
+  // Remove things once they are well behind the runner
+  const cleanupZ = PLAYER_START_Z + 13;
+
   obstacles = obstacles.filter((item) => {
-    if (item.z > 15) {
+    if (item.z > cleanupZ) {
       scene.remove(item.group);
       disposeObject(item.group);
       return false;
@@ -2752,7 +2938,7 @@ function updateWorld(delta) {
   });
 
   coins = coins.filter((item) => {
-    if (item.z > 15 || item.collected) {
+    if (item.z > cleanupZ || item.collected) {
       scene.remove(item.group);
       disposeObject(item.group);
       return false;
@@ -2770,16 +2956,20 @@ function checkCollisions() {
     if (Math.abs(obstacle.z - player.position.z) > 1.2) continue;
     if (Math.abs(player.position.x - LANES[obstacle.lane]) > 1.2) continue;
 
-    // Barriers can be jumped; crates can be jumped over too.
-    if (isJumping && player.position.y > 1.25) {
-      obstacle.passed = true;
-      continue;
-    }
-
-    // Sliding under a barrier only works if its bar is high enough.
-    if (isSliding && obstacle.type === 'barrier') {
-      obstacle.passed = true;
-      continue;
+    if (obstacle.type === 'overhead') {
+      // High bar: only sliding gets under it (jumping does not help).
+      if (isSliding) {
+        obstacle.passed = true;
+        continue;
+      }
+    } else {
+      // Low barrier (0.95 tall) or crate (1.4 tall): jump over it.
+      // Sliding no longer passes them.
+      const clearY = obstacle.type === 'crate' ? 1.25 : 0.9;
+      if (isJumping && player.position.y > clearY) {
+        obstacle.passed = true;
+        continue;
+      }
     }
 
     obstacle.passed = true;
@@ -2815,6 +3005,11 @@ function checkCollisions() {
 // CAMERA AND GAME LOOP
 // ------------------------------------------------------------
 
+function smoothRange(from, to, x) {
+  const t = THREE.MathUtils.clamp((x - from) / (to - from), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
 function updateCamera(delta) {
   if (!player) return;
 
@@ -2826,39 +3021,48 @@ function updateCamera(delta) {
   const inMenu = currentScreen !== 'game';
   menuBlend = THREE.MathUtils.damp(menuBlend, inMenu ? 1 : 0, 2.2, delta);
 
-  // introBlend: 1 before "GO" (camera outside the gate), 0 once running.
+  // introBlend: 1 before "GO" (camera pulled back), 0 once running.
   introBlend = THREE.MathUtils.damp(introBlend, raceStarted ? 0 : 1, 2.6, delta);
 
-  // During the swoop the camera stays lined up with the runner's lane so it
-  // flies through the same entrance arch, then eases back to the normal follow.
-  const follow = 0.22 + 0.78 * Math.min(1, introBlend * 4);
+  // gateBlend: 0..1 while the camera approaches and passes through the gate.
+  // The camera lines up with the runner and dips under the arch beam.
+  const gate = getGate();
+  let gateBlend = 0;
+  if (gate) {
+    const dist = camera.position.z - gate.position.z;
+    gateBlend = smoothRange(18, 9, dist) * (1 - smoothRange(-3, -9, dist));
+  }
+
+  const introFollow = 0.22 + 0.78 * Math.min(1, introBlend * 4);
+  const follow = THREE.MathUtils.lerp(introFollow, 1, gateBlend);
 
   _camTarget.set(
     player.position.x * follow,
-    4.4 + player.position.y * 0.07 + introBlend * INTRO_UP,
-    9.5 + introBlend * INTRO_BACK
+    THREE.MathUtils.lerp(4.4, GATE_CAM_HEIGHT, gateBlend)
+      + player.position.y * 0.07 + introBlend * INTRO_UP,
+    player.position.z + CAM_BACK + introBlend * INTRO_BACK
   );
 
   getMenuCameraPose(timeSec, _menuTarget, _lookMenu);
   _camTarget.lerp(_menuTarget, menuBlend);
 
-  // Slightly slower follow than before = steadier picture
+  // Slower follow = steadier picture
   camera.position.lerp(_camTarget, 1 - Math.exp(-delta * 2.6));
 
-  // Very subtle motion while running (was 0.025)
+  // Very subtle motion while running
   if (running) {
     camera.position.y += Math.sin(now * 0.008) * CAMERA_BOB;
   }
 
-  // Short, gentle shake after a collision (was 0.35 for 350 ms)
+  // Short, gentle shake after a collision
   if (now < shakeUntil) {
     const k = (shakeUntil - now) / HIT_SHAKE_MS;
     camera.position.x += (Math.random() - 0.5) * HIT_SHAKE * k;
     camera.position.y += (Math.random() - 0.5) * HIT_SHAKE * k;
   }
 
-  // Field of view widens with speed (gentler than before). A little wider on
-  // portrait screens in the menu so the gate and SUIIT both fit.
+  // Field of view widens a little with speed. A little wider on portrait
+  // screens in the menu so the gate and SUIIT both fit.
   const aspect = window.innerWidth / Math.max(1, window.innerHeight);
   const baseFov = window.innerWidth < 700 ? 68 : 62;
   const menuExtra = aspect < 1 ? 6 * menuBlend : 0;
@@ -2866,18 +3070,19 @@ function updateCamera(delta) {
   camera.fov = THREE.MathUtils.damp(camera.fov, targetFov, 4, delta);
   camera.updateProjectionMatrix();
 
-  // Where the camera looks. Before GO it frames the whole gate; while
-  // running it looks down the road; in the menus it looks at gate + SUIIT.
+  // Where the camera looks. Before GO it frames the runner from further back;
+  // while running it looks down the road; at the gate it looks straight
+  // through the arch; in the menus it looks at gate + SUIIT.
   const lookX = THREE.MathUtils.lerp(
-    player.position.x * 0.25,
-    GATE_OFFSET_X * 0.8,
-    introBlend
+    THREE.MathUtils.lerp(player.position.x * 0.25, GATE_OFFSET_X * 0.8, introBlend),
+    player.position.x,
+    gateBlend
   );
 
   _lookGame.set(
     lookX,
-    1.1 + player.position.y * 0.12 + introBlend * 1.0,
-    -7
+    1.1 + player.position.y * 0.12 + introBlend * 1.0 + gateBlend * 0.7,
+    player.position.z - 9 - introBlend * 12
   );
   _lookGame.lerp(_lookMenu, menuBlend);
 
@@ -2897,24 +3102,26 @@ function animate() {
 
   if (running && !paused && raceStarted && !raceFinished) {
     elapsed += delta;
-    distance += speed * delta * 1.7;
-    speed = Math.min(27, START_SPEED + distance * 0.0024);
+    distance += speed * delta * SCORE_RATE;
+    speed = Math.min(MAX_SPEED, START_SPEED + distance * SPEED_RAMP);
 
     updatePlayer(delta, time);
     updateWorld(delta);
     updateDust(delta);
     checkCollisions();
 
-    spawnTimer += delta;
-    if (spawnTimer > Math.max(0.9, 1.8 - distance * 0.0005)) {
+    // Obstacle waves are spaced by distance travelled, so the slower speed
+    // doesn't pack them tighter.
+    spawnTimer += speed * delta;
+    if (spawnTimer > Math.max(OBSTACLE_SPACING_MIN, OBSTACLE_SPACING - distance * 0.008)) {
       spawnTimer = 0;
       spawnObstacleWave();
     }
 
-    coinTimer += delta;
-    if (coinTimer > 4.8) {
+    coinTimer += speed * delta;
+    if (coinTimer > COIN_SPACING) {
       coinTimer = 0;
-      createCoin(Math.floor(Math.random() * 3), -105, random(1.1, 1.8));
+      createCoin(Math.floor(trackRng() * 3), SPAWN_Z, trackRandom(1.1, 1.8));
     }
 
     updateCamera(delta);
@@ -3047,7 +3254,7 @@ function syncRemotePlayers(players) {
   }
 
   remotePlayer.position.x = LANES[THREE.MathUtils.clamp(other.lane, 0, 2)];
-  remotePlayer.position.z = -1.5;
+  remotePlayer.position.z = PLAYER_START_Z - 3.5;
   remotePlayer.position.y = 0;
 }
 
@@ -3265,6 +3472,11 @@ window.addEventListener('keydown', (event) => {
 
 window.addEventListener('keyup', (event) => {
   heldKeys.delete(event.key);
+});
+
+// Pause automatically when the tab is hidden so you don't crash unseen
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) pauseGame();
 });
 
 // The on-screen control buttons (left / right / jump / slide) were removed.
